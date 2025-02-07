@@ -13,6 +13,10 @@ run-local:
 		docker-compose up -d; \
 	fi;
 
+run-local-clean:
+	docker-compose down --rmi all
+	make run-local
+
 run-cluster:
 	# pass
 
