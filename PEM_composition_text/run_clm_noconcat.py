@@ -272,6 +272,7 @@ def main():
             data_args.dataset_config_name,
             cache_dir=model_args.cache_dir,
             use_auth_token=True if model_args.use_auth_token else None,
+            keep_in_memory=True,
         )
         raw_datasets['train'] = load_dataset(
             data_args.dataset_name,
@@ -279,6 +280,7 @@ def main():
             split='train',
             cache_dir=model_args.cache_dir,
             use_auth_token=True if model_args.use_auth_token else None,
+            keep_in_memory=True,
         ).filter(lambda x: x["toxicity"]>0.8  )
 
         raw_datasets['validation'] = load_dataset(
@@ -287,6 +289,7 @@ def main():
             split='validation',
             cache_dir=model_args.cache_dir,
             use_auth_token=True if model_args.use_auth_token else None,
+            keep_in_memory=True,
         ).filter(lambda x: x["toxicity"]>0.8  )
         # print(len(raw_datasets['train']),len(raw_datasets['validation']))
         # pdb.set_trace()
@@ -297,6 +300,7 @@ def main():
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
                 use_auth_token=True if model_args.use_auth_token else None,
+                keep_in_memory=True,
             )
             raw_datasets["train"] = load_dataset(
                 data_args.dataset_name,
@@ -304,6 +308,7 @@ def main():
                 split=f"train[{data_args.validation_split_percentage}%:]",
                 cache_dir=model_args.cache_dir,
                 use_auth_token=True if model_args.use_auth_token else None,
+                keep_in_memory=True,
             )
     else:
         data_files = {}
@@ -325,6 +330,7 @@ def main():
             data_files=data_files,
             cache_dir=model_args.cache_dir,
             use_auth_token=True if model_args.use_auth_token else None,
+            keep_in_memory=True,
             **dataset_args,
         )
         # If no validation data is there, validation_split_percentage will be used to divide the dataset.
@@ -335,6 +341,7 @@ def main():
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
                 use_auth_token=True if model_args.use_auth_token else None,
+                keep_in_memory=True,
                 **dataset_args,
             )
             raw_datasets["train"] = load_dataset(
@@ -343,6 +350,7 @@ def main():
                 split=f"train[{data_args.validation_split_percentage}%:]",
                 cache_dir=model_args.cache_dir,
                 use_auth_token=True if model_args.use_auth_token else None,
+                keep_in_memory=True,
                 **dataset_args,
             )
 

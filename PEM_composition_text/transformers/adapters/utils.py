@@ -488,7 +488,7 @@ def resolve_adapter_path(
             return pull_from_hub(
                 adapter_name_or_path, model_name, adapter_config=adapter_config, version=version, **kwargs
             )
-        except EnvironmentError as ex:
+        except Exception as ex:
             logger.info(ex)
             logger.info("Attempting to load adapter from source 'hf'...")
             try:

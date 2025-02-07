@@ -17,22 +17,20 @@ RUN apt-get update && \
         python3-pip \
         python3-setuptools
 
+RUN apt-get update && pip3 install --upgrade pip
+RUN ln -s /usr/bin/python3 /usr/bin/python
 RUN pip3 install poetry~=1.2 && poetry config virtualenvs.create false
-
-########################################
-# Application dependencies
-RUN apt-get update
-RUN pip3 install --upgrade pip
-WORKDIR /src/
-COPY pyproject.toml /src/
-RUN poetry config virtualenvs.create false && \
-    poetry install --no-root --no-interaction --no-ansi
-
 RUN git config --global --add safe.directory /src
 
 ########################################
+# Application dependencies
+WORKDIR /src/
+COPY pyproject.toml /src/
+RUN poetry install --no-root --no-interaction --no-ansi
+
+########################################
 # Add Jupyter notebook
-RUN pip install jupyter pickleshare
+RUN poetry add jupyter pickleshare
 ADD https://github.com/krallin/tini/releases/download/v0.6.0/tini /usr/bin/tini
 RUN chmod +x /usr/bin/tini
 EXPOSE 8888

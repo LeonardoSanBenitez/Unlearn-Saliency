@@ -5,7 +5,7 @@ services:
     build: 
       context: .
       dockerfile: Dockerfile
-    command: ["jupyter", "notebook", "--port=8888", "--no-browser", "--ip=0.0.0.0", "--allow-root", "--NotebookApp.token=20e10069-1b7c-403f-9895-f6650f4e90d9"]
+    command: ["poetry", "run", "jupyter", "notebook", "--port=8888", "--no-browser", "--ip=0.0.0.0", "--allow-root", "--NotebookApp.token=20e10069-1b7c-403f-9895-f6650f4e90d9"]
     volumes:
       - ./:/src
     environment:

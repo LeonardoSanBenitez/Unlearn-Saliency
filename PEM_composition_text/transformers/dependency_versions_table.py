@@ -76,7 +76,7 @@ deps = {
     "tf2onnx": "tf2onnx",
     "timeout-decorator": "timeout-decorator",
     "timm": "timm",
-    "tokenizers": "tokenizers>=0.11.1,!=0.11.3,<0.13",
+    "tokenizers": "tokenizers==0.21.0",
     "torch": "torch>=1.0,<1.12",
     "torchaudio": "torchaudio",
     "pyctcdecode": "pyctcdecode>=0.3.0",
