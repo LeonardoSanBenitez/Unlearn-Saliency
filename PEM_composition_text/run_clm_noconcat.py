@@ -372,7 +372,7 @@ def main():
         config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
     elif model_args.model_name_or_path:
         config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
-        # config =AutoConfig.from_pretrained('checkpoints/hf_model/config.json')
+        # config =AutoConfig.from_pretrained('assets/model_hf/config.json')
     else:
         config = CONFIG_MAPPING[model_args.model_type]()
         logger.warning("You are instantiating a new config instance from scratch.")
@@ -391,7 +391,7 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
     elif model_args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
-        # tokenizer = AutoTokenizer.from_pretrained('./checkpoints/hf_model')
+        # tokenizer = AutoTokenizer.from_pretrained('./assets/model_hf')
     else:
         raise ValueError(
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
@@ -407,7 +407,7 @@ def main():
             revision=model_args.model_revision,
             use_auth_token=True if model_args.use_auth_token else None,
         )
-        # model = AutoModelForCausalLM.from_pretrained('./checkpoints/hf_model')
+        # model = AutoModelForCausalLM.from_pretrained('./assets/model_hf')
     else:
         model = AutoModelForCausalLM.from_config(config)
         n_params = sum(dict((p.data_ptr(), p.numel()) for p in model.parameters()).values())

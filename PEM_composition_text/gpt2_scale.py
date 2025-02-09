@@ -46,9 +46,9 @@ from transformers import (
     OpenAIGPTLMHeadModel,
     OpenAIGPTTokenizer,
 )
-TRANSFORMERS_CACHE="checkpoints/hf_model"
-HF_DATASETS_CACHE="checkpoints/hf_model"
-HF_METRICS_CACHE="checkpoints/hf_model"
+TRANSFORMERS_CACHE="./assets/models/hf"  # TODO: receive via arg
+HF_DATASETS_CACHE="./assets/datasets"
+HF_METRICS_CACHE="./assets/metrics"
 
 cache_dir=TRANSFORMERS_CACHE
 logging.basicConfig(
@@ -74,7 +74,7 @@ def set_seed(args):
     if args.n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
-def negation(ori_model,tuned_model,save_path,scale):
+def negation(ori_model,tuned_model,save_path,scale):  # Not used anymore
     ori_dict = ori_model.state_dict()
     # pdb.set_trace()
     tuned_dict=tuned_model.state_dict()
@@ -134,8 +134,8 @@ def adapter_negation(
     
 
     # model_name_or_path="roberta-base"
-    # adapter="checkpoints/glue/rte/20230208/lora_tr_train_0.1e-3.6000.0.01.0.1.32.8.364964.7/rte"
-    # #"checkpoints/glue/rte/20230208/ia3_tr_train_0.2e-2.1500.0.01.0.1.64.364676.2/rte"
+    # adapter="./assets/glue/rte/20230208/lora_tr_train_0.1e-3.6000.0.01.0.1.32.8.364964.7/rte"
+    # #"./assets/glue/rte/20230208/ia3_tr_train_0.2e-2.1500.0.01.0.1.64.364676.2/rte"
     # adapter_config="lora"
     # save_path="merged_adapters/negation/364964.7"
     # adapter_negation(model_name_or_path,adapter,adapter_config,save_path)
@@ -297,9 +297,9 @@ def main():
     #     model.set_active_adapters(["generation"])
     if args.negation:
         # negation(model,civil_model,args.model_save_dir,args.scale)
-    #"checkpoints/glue/rte/20230208/ia3_tr_train_0.2e-2.1500.0.01.0.1.64.364676.2/rte"
+    #"./assets/glue/rte/20230208/ia3_tr_train_0.2e-2.1500.0.01.0.1.64.364676.2/rte"
         model=adapter_negation(model,args.load_adapter,args.adapter_config,args.model_save_dir,args.scale)
-        breakpoint()
+        # breakpoint()
     elif args.load_adapter:
         model.load_adapter(args.load_adapter, load_as="civil_comments")
         model.set_active_adapters('civil_comments')
