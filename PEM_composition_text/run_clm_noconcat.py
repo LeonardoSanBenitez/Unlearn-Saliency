@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # coding=utf-8
 # Copyright 2020 The HuggingFace Inc. team. All rights reserved.
 #
@@ -459,7 +458,7 @@ def main():
         else:
             lang_adapter_name = None
         # Freeze all model weights except of those of this adapter
-        model.parallelize()
+        #model.parallelize()
         model.train_adapter([task_name])
         # Set the adapters to be used in every forward pass
         if lang_adapter_name:
@@ -648,6 +647,9 @@ def main():
         trainer.push_to_hub(**kwargs)
     else:
         trainer.create_model_card(**kwargs)
+        trainer.save_model(training_args.output_dir)  # Saves the tokenizer too for easy upload
+        if adapter_args.train_adapter:
+            model.save_adapter(training_args.output_dir, task_name)
 
 
 def _mp_fn(index):

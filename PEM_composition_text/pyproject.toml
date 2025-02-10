@@ -15,8 +15,8 @@ sentencepiece = "!=0.1.92"
 protobuf = "*"
 tokenizers = "0.21.0"
 regex = "2024.11.6"
-detoxify = "0.5.1"
-pandas = "~2.1"
+detoxify = "0.5.2"
+pandas = "~2.2"
 
 [build-system]
 requires = ["poetry-core"]

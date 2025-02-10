@@ -62,6 +62,7 @@ MAX_LENGTH = int(10000)  # Hardcoded max length to avoid infinite loop
 
 MODEL_CLASSES = {
     "gpt2": (GPT2LMHeadModel, GPT2Tokenizer),
+    "gpt2-medium": (GPT2LMHeadModel, GPT2Tokenizer),
     "gpt2-large": (GPT2LMHeadModel, GPT2Tokenizer),
     "openai-gpt": (OpenAIGPTLMHeadModel, OpenAIGPTTokenizer),
 }
@@ -206,7 +207,7 @@ def main():
 
     parser.add_argument("--load_adapter", type=str, default=None, help="Path to a trained adapter")
     parser.add_argument("--save_dir", type=str, default=None, help="Path to save")
-    parser.add_argument("--num", type=int, default=None, help="num of sample times")
+    parser.add_argument("--num", type=int, default=None, help="num of sample times (generated texts)")
     parser.add_argument("--model_save_dir", type=str, default=None, help="negationed model save path")
     parser.add_argument("--negation", action='store_true', help="negationed model save path")
     parser.add_argument("--scale", type=float, default=None, help="negationed model save path")
@@ -225,13 +226,13 @@ def main():
         args.model_type = args.model_type.lower()
         model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
     except KeyError:
-        raise KeyError("the model {} you specified is not supported. You are welcome to add it and open a PR :)")
+        raise KeyError(f"the model {args.model_type} you specified is not supported. You are welcome to add it and open a PR :)")
 
     # tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path)
-    tokenizer = tokenizer_class.from_pretrained('gpt2-large')
+    tokenizer = tokenizer_class.from_pretrained(args.model_type)
 
     tokenizer.pad_token = tokenizer.eos_token
-    model = model_class.from_pretrained('gpt2-large')
+    model = model_class.from_pretrained(args.model_type)
     civil_model = model_class.from_pretrained(args.model_name_or_path)
     
     # Setup adapters
@@ -303,7 +304,7 @@ def main():
     elif args.load_adapter:
         model.load_adapter(args.load_adapter, load_as="civil_comments")
         model.set_active_adapters('civil_comments')
-    model.parallelize()
+    #model.parallelize()
 
     
     
@@ -329,7 +330,7 @@ def main():
     else:
         input_ids = encoded_prompt
     generated_sequences = []
-    for _ in range(args.num):
+    for i in range(args.num):
         output_sequences = model.generate(
             input_ids=input_ids,
             max_length=args.length,
@@ -347,7 +348,7 @@ def main():
             output_sequences.squeeze_()
 
         for generated_sequence_idx, generated_sequence in enumerate(output_sequences):
-            print(f"=== GENERATED SEQUENCE {generated_sequence_idx + 1} ===")
+            print(f"=== {i+1}/{args.num} GENERATED SEQUENCE {generated_sequence_idx + 1} ===")
             generated_sequence = generated_sequence.tolist()
 
             # Decode text
@@ -357,21 +358,19 @@ def main():
             text = text[: text.find(args.stop_token) if args.stop_token else None]
 
             # Add the prompt at the beginning of the sequence. Remove the excess text that was used for pre-processing
-            # total_sequence = (
-            #     prompt_text + text[len(tokenizer.decode(encoded_prompt[0], clean_up_tokenization_spaces=True)) :]
-            # )
             total_sequence = (
-                text[len(tokenizer.decode(encoded_prompt[0], clean_up_tokenization_spaces=True)) :]
+                prompt_text + text[len(tokenizer.decode(encoded_prompt[0], clean_up_tokenization_spaces=True)) :]
             )
-
 
             generated_sequences.append(total_sequence)
             print(total_sequence)
-    output = open(args.save_dir,'a+') 
-    for line in generated_sequences:
-        line=line.replace("\n","")
-        output.write(line+'\n')   
-   
+
+    os.makedirs(os.path.dirname(args.save_dir), exist_ok=True)
+    with open(args.save_dir, 'w') as f:
+        for line in generated_sequences:
+            line = line.replace("\n", "")
+            f.write(line + '\n')
+    
 
     return generated_sequence
 

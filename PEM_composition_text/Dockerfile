@@ -18,7 +18,6 @@ RUN apt-get update && \
         python3-setuptools
 
 RUN apt-get update && pip3 install --upgrade pip
-RUN ln -s /usr/bin/python3 /usr/bin/python
 RUN pip3 install poetry~=1.2 && poetry config virtualenvs.create false
 RUN git config --global --add safe.directory /src
 
