@@ -15,7 +15,6 @@ From: ubuntu:22.04
 %files
     # Available at build time
     pyproject.toml /pyproject.toml
-    poetry.lock /poetry.lock
 
 %post
     export DEBIAN_FRONTEND=noninteractive
@@ -30,7 +29,9 @@ From: ubuntu:22.04
         ca-certificates \
         curl \
         git \
-        wget
+        wget \
+        libx11-6 \
+        libxext6
 
     # Install Python 3.11
     add-apt-repository ppa:deadsnakes/ppa && \
