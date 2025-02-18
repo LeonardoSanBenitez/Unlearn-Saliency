@@ -15,8 +15,10 @@ sentencepiece = "!=0.1.92"
 protobuf = "*"
 tokenizers = "0.21.0"
 regex = "2024.11.6"
-detoxify = "0.5.2"
+#detoxify = "0.5.2"
+#detoxify = {version = "0.5.2", optional = true}
 pandas = "~2.2"
+#transformers = {path = "./transformers"}
 
 [build-system]
 requires = ["poetry-core"]

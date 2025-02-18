@@ -1,7 +1,7 @@
 version: "3.5"
 services:
   notebooks:
-    container_name: unlearning-notebooks
+    container_name: unlearning-notebooks-PEM-text
     build: 
       context: .
       dockerfile: Dockerfile
