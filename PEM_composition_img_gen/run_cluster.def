@@ -15,7 +15,9 @@ From: ubuntu:22.04
 %files
     # Available at build time
     pyproject.toml /pyproject.toml
+    %if exists poetry.lock
     poetry.lock /poetry.lock
+    %endif
 
 %post
     export DEBIAN_FRONTEND=noninteractive
