@@ -6,7 +6,7 @@ authors = ["Leonardo Benitez <lsbenitezpereira@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "~3.11"
+python = "~3.10"
 python-dotenv = "*"
 Pillow = "*"
 accelerate = ">=0.31.0"

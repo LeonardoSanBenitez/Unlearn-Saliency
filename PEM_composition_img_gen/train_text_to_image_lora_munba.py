@@ -15,6 +15,14 @@
 # limitations under the License.
 """Fine-tuning script for Stable Diffusion for text2image with support for LoRA."""
 
+
+
+"""
+Downgrades from the original script:
+- Support for snr_gamma was dropped
+- idem scale_lr
+"""
+
 import argparse
 import logging
 import math
@@ -300,12 +308,6 @@ def parse_args():
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
-        "--scale_lr",
-        action="store_true",
-        default=False,
-        help="Scale the learning rate by the number of GPUs, gradient accumulation steps, and batch size.",
-    )
-    parser.add_argument(
         "--lr_scheduler",
         type=str,
         default="constant",
@@ -316,13 +318,6 @@ def parse_args():
     )
     parser.add_argument(
         "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
-    )
-    parser.add_argument(
-        "--snr_gamma",
-        type=float,
-        default=None,
-        help="SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0. "
-        "More details here: https://arxiv.org/abs/2303.09556.",
     )
     parser.add_argument(
         "--use_8bit_adam", action="store_true", help="Whether or not to use 8-bit Adam from bitsandbytes."
@@ -558,14 +553,10 @@ def main():
         unet.enable_gradient_checkpointing()
 
     # Enable TF32 for faster training on Ampere GPUs,
-    # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
+    # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-s
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
 
-    if args.scale_lr:
-        args.learning_rate = (
-            args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
-        )
 
     # Initialize the optimizer
     if args.use_8bit_adam:
@@ -797,151 +788,202 @@ def main():
 
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
-        train_loss = 0.0
+        train_loss_forget = 0.0
+        train_loss_retain = 0.0
         for step, batch_forget in enumerate(train_forget_dataloader):
-            print('>>>>>>>>> OUTER BACTH', batch_forget)
+            batch_retain = next(iter(train_retain_dataloader))
+            
+            batch_forget["pixel_values"] = batch_forget["pixel_values"].to(accelerator.device)
+            batch_retain["pixel_values"] = batch_retain["pixel_values"].to(accelerator.device)
+            
+            batch_forget["input_ids"] = batch_forget["input_ids"].to(accelerator.device)
+            batch_retain["input_ids"] = batch_retain["input_ids"].to(accelerator.device)
 
-            for _, batch_retain in enumerate(train_retain_dataloader):
-                print('>>>>>>>>> INNER BACTH', batch_retain)
-                break
-            break
-                with accelerator.accumulate(unet):
-                    # Convert images to latent space
-                    latents_forget = vae.encode(batch_forget["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                    latents_forget = latents_forget * vae.config.scaling_factor
+            with accelerator.accumulate(unet):
+                # Convert images to latent space
+                latents_forget = vae.encode(batch_forget["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents_forget = latents_forget * vae.config.scaling_factor
 
-                    latents_retain = vae.encode(batch_retain["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                    latents_retain = latents_retain * vae.config.scaling_factor
+                latents_retain = vae.encode(batch_retain["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents_retain = latents_retain * vae.config.scaling_factor
 
-                    # Sample noise that we'll add to the latents
-                    noise_forget = torch.randn_like(latents_forget)
-                    noise_retain = torch.randn_like(latents_retain)
-                    if args.noise_offset:
-                        # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                        noise_forget += args.noise_offset * torch.randn(
-                            (latents_forget.shape[0], latents_forget.shape[1], 1, 1), device=latents_forget.device
-                        )
-                        noise_retain += args.noise_offset * torch.randn(
-                            (latents_retain.shape[0], latents_retain.shape[1], 1, 1), device=latents_retain.device
-                        )
-                        
+                # Sample noise that we'll add to the latents
+                noise_forget = torch.randn_like(latents_forget)
+                noise_retain = torch.randn_like(latents_retain)
+                if args.noise_offset:
+                    # https://www.crosslabs.org//blog/diffusion-with-offset-noise
+                    noise_forget += args.noise_offset * torch.randn(
+                        (latents_forget.shape[0], latents_forget.shape[1], 1, 1), device=latents_forget.device
+                    )
+                    noise_retain += args.noise_offset * torch.randn(
+                        (latents_retain.shape[0], latents_retain.shape[1], 1, 1), device=latents_retain.device
+                    )
+                    
 
-                    bsz = latents_forget.shape[0]
-                    # Sample a random timestep for each image
-                    timesteps_forget = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents_forget.device)
-                    timesteps_forget = timesteps_forget.long()
-                    timestep_retain = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents_retain.device)
-                    timestep_retain = timestep_retain.long()
+                bsz = latents_forget.shape[0]
+                # Sample a random timestep for each image
+                timesteps_forget = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents_forget.device)
+                timesteps_forget = timesteps_forget.long()
+                timesteps_retain = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents_retain.device)
+                timesteps_retain = timesteps_retain.long()
 
-                    # Add noise to the latents according to the noise magnitude at each timestep
-                    # (this is the forward diffusion process)
-                    noisy_latents_forget = noise_scheduler.add_noise(latents_forget, noise_forget, timesteps_forget)
-                    noisy_latents_retain = noise_scheduler.add_noise(latents_retain, noise_retain, timestep_retain)
+                # Add noise to the latents according to the noise magnitude at each timestep
+                # (this is the forward diffusion process)
+                noisy_latents_forget = noise_scheduler.add_noise(latents_forget, noise_forget, timesteps_forget)
+                noisy_latents_retain = noise_scheduler.add_noise(latents_retain, noise_retain, timesteps_retain)
 
-                    # Get the text embedding for conditioning
-                    encoder_hidden_states_forget = text_encoder(batch_forget["input_ids"], return_dict=False)[0]
-                    encoder_hidden_states_retain = text_encoder(batch_retain["input_ids"], return_dict=False)[0]
+                # Get the text embedding for conditioning
+                encoder_hidden_states_forget = text_encoder(batch_forget["input_ids"], return_dict=False)[0]
+                encoder_hidden_states_retain = text_encoder(batch_retain["input_ids"], return_dict=False)[0]
 
-                    # Get the target for loss depending on the prediction type
-                    if args.prediction_type is not None:
-                        # set prediction_type of scheduler if defined
-                        noise_scheduler.register_to_config(prediction_type=args.prediction_type)
+                # Get the target for loss depending on the prediction type
+                if args.prediction_type is not None:
+                    # set prediction_type of scheduler if defined
+                    noise_scheduler.register_to_config(prediction_type=args.prediction_type)
 
-                    if noise_scheduler.config.prediction_type == "epsilon":
-                        target_forget = noise_forget
-                        target_retain = noise_retain
-                    elif noise_scheduler.config.prediction_type == "v_prediction":
-                        target_forget = noise_scheduler.get_velocity(latents_forget, noise_forget, timesteps_forget)
-                        target_retain = noise_scheduler.get_velocity(latents_retain, noise_retain, timestep_retain)
-                    else:
-                        raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+                if noise_scheduler.config.prediction_type == "epsilon":
+                    target_forget = noise_forget
+                    target_retain = noise_retain
+                elif noise_scheduler.config.prediction_type == "v_prediction":
+                    target_forget = noise_scheduler.get_velocity(latents_forget, noise_forget, timesteps_forget)
+                    target_retain = noise_scheduler.get_velocity(latents_retain, noise_retain, timesteps_retain)
+                else:
+                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-                    # Predict the noise residual and compute loss
-                    # TODO...
-                    model_pred = unet(noisy_latents_forget, timesteps_forget, encoder_hidden_states_forget, return_dict=False)[0]
+                # Predict the noise residual and compute loss
+                model_pred_forget = unet(noisy_latents_forget, timesteps_forget, encoder_hidden_states_forget, return_dict=False)[0]
+                model_pred_retain = unet(noisy_latents_retain, timesteps_retain, encoder_hidden_states_retain, return_dict=False)[0]
 
-                    if args.snr_gamma is None:
-                        loss = F.mse_loss(model_pred.float(), target_forget.float(), reduction="mean")
-                    else:
-                        # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
-                        # Since we predict the noise instead of x_0, the original formulation is slightly changed.
-                        # This is discussed in Section 4.2 of the same paper.
-                        snr = compute_snr(noise_scheduler, timesteps_forget)
-                        mse_loss_weights = torch.stack([snr, args.snr_gamma * torch.ones_like(timesteps_forget)], dim=1).min(
-                            dim=1
-                        )[0]
-                        if noise_scheduler.config.prediction_type == "epsilon":
-                            mse_loss_weights = mse_loss_weights / snr
-                        elif noise_scheduler.config.prediction_type == "v_prediction":
-                            mse_loss_weights = mse_loss_weights / (snr + 1)
+                loss_forget = F.mse_loss(model_pred_forget.float(), target_forget.float(), reduction="mean")  # This is a Tensor of shape [], aka is a float
+                loss_retain = F.mse_loss(model_pred_retain.float(), target_retain.float(), reduction="mean")
 
-                        loss = F.mse_loss(model_pred.float(), target_forget.float(), reduction="none")
-                        loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
-                        loss = loss.mean()
+                # Gather the losses across all processes for logging (if we use distributed training).
+                train_loss_forget += accelerator.gather(loss_forget.repeat(args.train_batch_size)).mean().item() / args.gradient_accumulation_steps
+                train_loss_retain += accelerator.gather(loss_retain.repeat(args.train_batch_size)).mean().item() / args.gradient_accumulation_steps
 
-                    # Gather the losses across all processes for logging (if we use distributed training).
-                    avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
-                    train_loss += avg_loss.item() / args.gradient_accumulation_steps
+                #########################################
+                # Backpropagate
+                #########################################
+                
+                # This is how it was before the munba trick:
+                #accelerator.backward(loss)
+                #if accelerator.sync_gradients:
+                #    params_to_clip = lora_layers
+                #    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                #optimizer.step()
+                #lr_scheduler.step()
+                #optimizer.zero_grad()
+                
+                # This is with the munba trick:
+                
+                # Compute gradients
+                optimizer.zero_grad()
+                accelerator.backward(loss_forget)
+                grads_forget = [p.grad.clone() for p in unet.parameters() if p.requires_grad]  # This list has 256 elements; each element is a torch.Tensor of shapes like [4, 320], then [320, 4], then [4, 640], then [640, 4], etc
+                
+                optimizer.zero_grad()
+                accelerator.backward(loss_retain)
+                grads_retain = [p.grad.clone() for p in unet.parameters() if p.requires_grad]
+                
+                # TODO: append the cossine distance to the lists
+                
+                #for e in grads_forget:
+                #    print(e.shape)
 
-                    # Backpropagate
-                    accelerator.backward(loss)
-                    if accelerator.sync_gradients:
-                        params_to_clip = lora_layers
-                        accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad()
 
-                # Checks if the accelerator has performed an optimization step behind the scenes
+                # Stack gradients to form matrix G
+                G = torch.stack([
+                    torch.cat([g.view(-1) for g in grads_retain]),
+                    torch.cat([g.view(-1) for g in grads_forget])
+                ])
+                K = G @ G.T  # Compute K = G^T G; It is a 2x2 tensor
+                
+                
+                # Solve for α using narsh equation
+                k11, k12, k22 = K[0, 0], K[0, 1], K[1, 1]
+                alpha_retain = torch.sqrt((2 * k11 * k22 + k12 * torch.sqrt(k11 * k22)) / (k11**2 * k22 - k11 * k12**2))    # This is a Tensor of shape [], aka is a float
+                alpha_forget = (1 - k11 * alpha_retain**2) / (k12 * alpha_retain)    
+                alpha = torch.tensor([alpha_retain, alpha_forget]).reshape(2, 1)  # Typical values seem to be things like [0.0016, -0.0029]
+                # print("Alpha in this iteration:", alpha)
+
+                # Compute parameter update (but don't manually modify .data)
+                G = G.to(accelerator.device)
+                alpha = alpha.to(accelerator.device)
+                
+                
+                scaled_grad = G.T @ alpha  # TODO: should this be multiplied by somethinglike 1/alpha?
+
+                # Assign updates as "fake gradients" for the optimizer
+                for param, update in zip((p for p in unet.parameters() if p.requires_grad), 
+                                         torch.split(scaled_grad, [p.numel() for p in unet.parameters() if p.requires_grad])):
+                    param.grad = update.view(param.shape)  # Overwrite gradients
+
+                # Gradient clipping
                 if accelerator.sync_gradients:
-                    progress_bar.update(1)
-                    global_step += 1
-                    accelerator.log({"train_loss": train_loss}, step=global_step)
-                    train_loss = 0.0
+                    params_to_clip = lora_layers
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
-                    if global_step % args.checkpointing_steps == 0:
-                        if accelerator.is_main_process:
-                            # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                            if args.checkpoints_total_limit is not None:
-                                checkpoints = os.listdir(args.output_dir)
-                                checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                                checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                # Optimizer step
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+    
+                #########################################
+                # End of Backpropagate
+                #########################################
 
-                                # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                                if len(checkpoints) >= args.checkpoints_total_limit:
-                                    num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
-                                    removing_checkpoints = checkpoints[0:num_to_remove]
+            # Checks if the accelerator has performed an optimization step behind the scenes
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
+                global_step += 1
+                accelerator.log({"train_loss_forget": train_loss_forget}, step=global_step)
+                accelerator.log({"train_loss_retain": train_loss_retain}, step=global_step)
+                train_loss_forget = 0.0
+                train_loss_retain = 0.0
 
-                                    logger.info(
-                                        f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                    )
-                                    logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                if global_step % args.checkpointing_steps == 0:
+                    if accelerator.is_main_process:
+                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                        if args.checkpoints_total_limit is not None:
+                            checkpoints = os.listdir(args.output_dir)
+                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
 
-                                    for removing_checkpoint in removing_checkpoints:
-                                        removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                        shutil.rmtree(removing_checkpoint)
+                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                            if len(checkpoints) >= args.checkpoints_total_limit:
+                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                                removing_checkpoints = checkpoints[0:num_to_remove]
 
-                            save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                            accelerator.save_state(save_path)
+                                logger.info(
+                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                )
+                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
-                            unwrapped_unet = unwrap_model(unet)
-                            unet_lora_state_dict = convert_state_dict_to_diffusers(
-                                get_peft_model_state_dict(unwrapped_unet)
-                            )
+                                for removing_checkpoint in removing_checkpoints:
+                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                                    shutil.rmtree(removing_checkpoint)
 
-                            StableDiffusionPipeline.save_lora_weights(
-                                save_directory=save_path,
-                                unet_lora_layers=unet_lora_state_dict,
-                                safe_serialization=True,
-                            )
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        accelerator.save_state(save_path)
 
-                            logger.info(f"Saved state to {save_path}")
+                        unwrapped_unet = unwrap_model(unet)
+                        unet_lora_state_dict = convert_state_dict_to_diffusers(
+                            get_peft_model_state_dict(unwrapped_unet)
+                        )
 
-                logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-                progress_bar.set_postfix(**logs)
+                        StableDiffusionPipeline.save_lora_weights(
+                            save_directory=save_path,
+                            unet_lora_layers=unet_lora_state_dict,
+                            safe_serialization=True,
+                        )
 
-                if global_step >= args.max_train_steps:
-                    break
+                        logger.info(f"Saved state to {save_path}")
+
+            logs = {"step_loss": loss_forget.detach().item(), "step_loss_forget": loss_forget.detach().item(), "step_loss_retain": loss_retain.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            progress_bar.set_postfix(**logs)
+
+            if global_step >= args.max_train_steps:
+                break
 
         if accelerator.is_main_process:
             if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
