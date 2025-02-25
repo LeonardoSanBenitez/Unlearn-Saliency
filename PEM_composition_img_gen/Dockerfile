@@ -11,7 +11,11 @@ RUN apt-get update && \
         ca-certificates \
         curl \
         git \
-        wget
+        wget \
+        libx11-6 \
+        libxext6 \
+        ffmpeg \
+        libsm6 
 
 RUN add-apt-repository ppa:deadsnakes/ppa && \
     apt-get update && \

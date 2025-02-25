@@ -2,6 +2,8 @@ assets/
 *.sif
 checkpoints/
 
+# Maybe it's good to commit the lock, to ensure reproducible setups
+poetry.lock
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
