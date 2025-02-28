@@ -988,7 +988,6 @@ def main():
         if accelerator.is_main_process:
             if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
                 # create pipeline
-                print('>>>>>>>>>>>> EVALUATING')
                 pipeline = DiffusionPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     unet=unwrap_model(unet),
@@ -1000,7 +999,6 @@ def main():
 
                 del pipeline
                 torch.cuda.empty_cache()
-    print('>>>>>>>>>>>>> FINISHED TRAINING')
 
     # Save the lora layers
     accelerator.wait_for_everyone()
@@ -1031,8 +1029,7 @@ def main():
             # run inference
             images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)
 
-        #if args.push_to_hub:
-        if False: # TODO
+        if args.push_to_hub:
             save_model_card(
                 repo_id,
                 images=images,
