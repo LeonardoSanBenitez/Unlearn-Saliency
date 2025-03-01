@@ -32,6 +32,7 @@ import shutil
 from contextlib import nullcontext
 from pathlib import Path
 from typing import List
+import time
 
 import datasets
 import numpy as np
@@ -59,13 +60,27 @@ from diffusers.utils import check_min_version, convert_state_dict_to_diffusers, 
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
+from huggingface_hub.repocard_data import EvalResult
 
+import datasets
+from PIL import Image
+import matplotlib.pyplot as plt
+import random
+from diffusers import AutoPipelineForText2Image, StableDiffusionPipeline
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
+from torchmetrics.functional.multimodal import clip_score
+from functools import partial
+from typing import Literal, List, Dict, Tuple, Optional, Callable, Union
 
 if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.33.0.dev0")
+
+
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -77,7 +92,13 @@ def save_model_card(
     dataset_forget_name: str = None,
     dataset_retain_name: str = None,
     repo_folder: str = None,
+    eval_results: List[EvalResult] = [],  # whenever possible, should have this names: https://huggingface.co/metrics
+    tags: List[str] = [],
 ):
+    '''
+    
+    the resulting file looks like this: https://github.com/huggingface/hub-docs/blob/main/modelcard.md
+    '''
     img_str = ""
     if images is not None:
         for i, image in enumerate(images):
@@ -98,18 +119,228 @@ These are LoRA adaption weights for {base_model}. The weights were fine-tuned fo
         model_description=model_description,
         inference=True,
     )
-
-    tags = [
-        "stable-diffusion",
-        "stable-diffusion-diffusers",
-        "text-to-image",
-        "diffusers",
-        "diffusers-training",
-        "lora",
-    ]
+    model_card.card_data_class.eval_results = eval_results
     model_card = populate_model_card(model_card, tags=tags)
-
     model_card.save(os.path.join(repo_folder, "README.md"))
+
+
+
+from typing import Tuple
+from diffusers import AutoPipelineForText2Image, StableDiffusionPipeline
+
+
+############################################
+# Unlearning algorithms
+############################################
+def unlearn_lora(model_original_id: str, model_lora_id: str, device: str) -> Tuple[StableDiffusionPipeline, StableDiffusionPipeline, StableDiffusionPipeline]:
+    '''
+    id can be both a local dir or a huggingface model id
+    return pipeline_original, pipeline_learned, pipeline_unlearned
+    '''
+    pipeline_original = AutoPipelineForText2Image.from_pretrained(model_original_id, torch_dtype=torch.float16, safety_checker=None).to(device)
+
+    pipeline_learned = AutoPipelineForText2Image.from_pretrained(model_original_id, torch_dtype=torch.float16, safety_checker=None).to(device)
+    pipeline_learned.load_lora_weights(model_lora_id, weight_name="pytorch_lora_weights.safetensors")
+
+    pipeline_unlearned = AutoPipelineForText2Image.from_pretrained(model_original_id, torch_dtype=torch.float16, safety_checker=None).to(device)
+    pipeline_unlearned.load_lora_weights(model_lora_id, weight_name="pytorch_lora_weights.safetensors")
+    total: int = 0
+    sum_before_invert: float = sum([float(param.sum()) for name, param in pipeline_unlearned.unet.named_parameters() if "lora_A" in name])
+    for name, param in pipeline_unlearned.unet.named_parameters():
+        if "lora_A" in name:
+            logger.debug(f"Inverting param {name}")
+            param.data = -1 * param.data
+            total += 1
+    assert sum_before_invert == -sum([float(param.sum()) for name, param in pipeline_unlearned.unet.named_parameters() if "lora_A" in name])
+    assert total > 0
+    logger.debug(f"Inverted {total} params")
+
+    return pipeline_original, pipeline_learned, pipeline_unlearned
+
+############################################
+# Evaluation utilities
+############################################
+class ImageTextSimilarityJudge:
+    metrics: List[Literal['clip']]
+    _clip_score_fn: Optional[Callable]
+
+    def __init__(self, metrics: List[Literal['clip']]):
+        self.metrics = metrics
+
+        # Download the models for the LPIPS metrics, if required
+        if 'clip' in self.metrics:
+            self._clip_score_fn = partial(clip_score, model_name_or_path="openai/clip-vit-base-patch16")
+
+    def evaluate(self, image: Union[Image.Image, np.ndarray], text: str) -> Dict[str, float]:
+        scores: Dict[str, float] = {}
+
+        # Preprocess
+        image_np: np.ndarray
+        if isinstance(image, Image.Image):
+            image_np = np.array(image)
+        else:
+            image_np = image
+        image_int = (image_np * 255).astype("uint8")
+
+        # Calculate
+        for metric in self.metrics:
+            if metric == 'clip':
+                assert self._clip_score_fn is not None
+                scores[metric] = float(self._clip_score_fn(torch.from_numpy(image_int), text).detach())
+        return scores
+
+
+
+
+def eval_text_to_image_unlearning(
+    pipeline_original: StableDiffusionPipeline,
+    pipeline_learned: StableDiffusionPipeline,
+    pipeline_unlearned: StableDiffusionPipeline,
+    prompts_forget: List[str],
+    prompts_retain: List[str],
+    judge_clip: ImageTextSimilarityJudge,
+) -> Tuple[List[EvalResult], Dict[str, List[Image.Image]]]:
+    eval_results = []
+    images = {}
+
+    metric_common_attributes = {
+        "task_type": "text-to-image",
+    }
+
+    for scope, prompts in {'forget': prompts_forget, 'retain': prompts_retain}.items():
+        scores_original: List[float] = []
+        scores_learned: List[float] = []
+        scores_unlearned: List[float] = []
+        scores_difference_learned_unlearned: List[float] = []
+        scores_difference_original_unlearned: List[float] = []
+        latencies: List[float] = []
+
+        for prompt in prompts:
+            t0 = time.time()
+            image_original = pipeline_original(prompt).images[0]
+            image_learned = pipeline_learned(prompt).images[0]
+            image_unlearned = pipeline_unlearned(prompt).images[0]
+            latencies.append((time.time() - t0)/3)
+
+            score_original = judge_clip.evaluate(image_original, prompt)['clip']
+            score_learned = judge_clip.evaluate(image_learned, prompt)['clip']
+            score_unlearned = judge_clip.evaluate(image_unlearned, prompt)['clip']
+            scores_original.append(score_original)
+            scores_learned.append(score_learned)
+            scores_unlearned.append(score_unlearned)
+            scores_difference_learned_unlearned.append(score_learned - score_unlearned)
+            scores_difference_original_unlearned.append(score_original - score_unlearned)
+
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            axes[0].imshow(image_original)
+            axes[0].set_title(f"Original\nClip Score={score_original:.2f}")
+            axes[0].axis("off")
+            axes[1].imshow(image_learned)
+            axes[1].set_title(f"Learned\nClip Score={score_learned:.2f}")
+            axes[1].axis("off")
+            axes[2].imshow(image_unlearned)
+            axes[2].set_title(f"Unlearned\nClip Score={score_unlearned:.2f}")
+            axes[2].axis("off")
+            fig.suptitle(prompt, fontsize=16)
+            images[prompt] = Image.fromarray(np.uint8(fig.canvas.renderer._renderer))
+            plt.show()
+
+        # Assemble metrics object
+        # EvalResult: https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/repocard_data.py#L13
+        # card_data_class: https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/repocard_data.py#L248
+        # Some info about the fields:
+        #   - task_type: str, https://hf.co/tasks
+        #   - dataset_type: str, hub ID, as searchable in https://hf.co/datasets
+        #   - dataset_name: str, pretty name
+        #   - metric_type: str, whenever possible should have these names: https://hf.co/metrics
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score of original model mean (~↑)',
+            metric_value = float(np.mean(scores_original)),
+            **metric_common_attributes,
+        ))
+
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score of original model std (~↓)',
+            metric_value = float(np.std(scores_original)),
+            **metric_common_attributes,
+        ))
+
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score of learned model mean ({"~↑" if scope == "forget" else "~"})',
+            metric_value = float(np.mean(scores_learned)),
+            **metric_common_attributes,
+        ))
+
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score of learned model std (~↓)',
+            metric_value = float(np.std(scores_learned)),
+            **metric_common_attributes,
+        ))
+
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score of unlearned model mean ({"↓" if scope == "forget" else "↑"})',
+            metric_value = float(np.mean(scores_unlearned)),
+            **metric_common_attributes,
+        ))
+
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score of unlearned model std (~↓)',
+            metric_value = float(np.std(scores_unlearned)),
+            **metric_common_attributes,
+        ))
+
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score difference between learned and unlearned ({"↑" if scope == "forget" else "↓"})',
+            metric_value = float(np.mean(scores_difference_learned_unlearned)),
+            **metric_common_attributes,
+        ))
+
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score difference between learned and unlearned std (~↓)',
+            metric_value = float(np.std(scores_difference_learned_unlearned)),
+            **metric_common_attributes,
+        ))
+
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score difference between original and unlearned ({"↑" if scope == "forget" else "↓"})',
+            metric_value = float(np.mean(scores_difference_original_unlearned)),
+            **metric_common_attributes,
+        ))
+
+        eval_results.append(EvalResult(
+            metric_type = 'clip',
+            metric_name = f'{scope.capitalize()}Set clip score difference between original and unlearned std (~↓)',
+            metric_value = float(np.std(scores_difference_original_unlearned)),
+            **metric_common_attributes,
+        ))
+
+    eval_results.append(EvalResult(
+        metric_type = 'runtime',
+        metric_name = 'Inference latency seconds mean(↓)',
+        metric_value = float(np.mean(latencies)),
+        **metric_common_attributes,
+    ))
+
+    eval_results.append(EvalResult(
+        metric_type = 'runtime',
+        metric_name = 'Inference latency seconds std(~↓)',
+        metric_value = float(np.std(latencies)),
+        **metric_common_attributes,
+    ))
+
+
+
+    return eval_results, images
+
 
 
 def log_validation(
@@ -438,12 +669,40 @@ DATASET_NAME_MAPPING = {
 
 
 def main():
+    t0 = time.time()
     args = parse_args()
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
             " Please use `huggingface-cli login` to authenticate with the Hub."
         )
+
+    # TODO: how to flexibly receive these prompts?
+    # I want to support 2 cases: when the prompts are given directly (aka list of strings), or when only the dateset ID is given and the prompts are in huggingface
+    eval_prompts_forget = [
+        "A naruto with blue eyes",
+        "One naruto character with dark hair and brown eyes",
+        "Naruto in a blue shirt and headband",
+        "Naruto with a white hat and a red cross on his head",
+        "Naruto in armor standing in front of a blue background",
+        "A character from the anime naruto with yellow air and orange clothing, hand drawn",
+        "A woman from the anime naruto, wearing clothing from the anime, standing in front of a traditional building",
+        "An anime character in a white suit with a purple face, drawn in naruto-style",
+        "Naruto",
+        "Many characters from the series Naruto laughing and hugging each other as a family",
+    ]
+    eval_prompts_retain = [
+        "A man with blue eyes",
+        "One person with dark hair and brown eyes",
+        "A man in a blue shirt and headband",
+        "A man with a white hat and a red cross on his head",
+        "A man in armor standing in front of a blue background",
+        "A character with yellow air and orange clothing, hand drawn",
+        "A woman in a suit and tie standing in front of a building",
+        "An cartoon character in a white suit with a purple face",
+        "A cartoon character",
+        "Many people from the series Naruto laughing and hugging each other as a family",
+    ]
 
     logging_dir = Path(args.output_dir, args.logging_dir)
 
@@ -578,6 +837,8 @@ def main():
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
+
+    t1 = time.time()
 
     # Get the datasets: you can either provide your own training and evaluation files (see below)
     # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
@@ -736,6 +997,7 @@ def main():
         accelerator.init_trackers("text2image-fine-tune", config=vars(args))
 
     # Train!
+    t2 = time.time()
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
@@ -999,10 +1261,10 @@ def main():
 
                 del pipeline
                 torch.cuda.empty_cache()
-
-    # Save the lora layers
+    
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
+        # Save the lora layers
         unet = unet.to(torch.float32)
 
         unwrapped_unet = unwrap_model(unet)
@@ -1013,6 +1275,8 @@ def main():
             safe_serialization=True,
         )
 
+        t3 = time.time()
+
         # Final inference
         # Load previous pipeline
         if args.validation_prompt is not None:
@@ -1022,13 +1286,46 @@ def main():
                 variant=args.variant,
                 torch_dtype=weight_dtype,
             )
+            pipeline.load_lora_weights(args.output_dir)  # load attention processors
+            images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)  # run inference
 
-            # load attention processors
-            pipeline.load_lora_weights(args.output_dir)
 
-            # run inference
-            images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)
+        #################################
+        pipeline_original, pipeline_learned, pipeline_unlearned = unlearn_lora(args.pretrained_model_name_or_path, args.output_dir, device=accelerator.device)
+        eval_results, images2 = eval_text_to_image_unlearning(
+            pipeline_original,
+            pipeline_learned,
+            pipeline_unlearned,
+            eval_prompts_forget,
+            eval_prompts_retain,
+            judge_clip=ImageTextSimilarityJudge(metrics=['clip']),
+        )
+        images += images2
 
+        t4 = time.time()
+
+        eval_results.append(EvalResult(
+            metric_type = 'runtime',
+            metric_name = f'Runtime init seconds (~↓)',
+            metric_value = t1-t0,
+        ))
+        eval_results.append(EvalResult(
+            metric_type = 'runtime',
+            metric_name = f'Runtime data loading seconds (~↓)',
+            metric_value = t2-t1,
+        ))
+        eval_results.append(EvalResult(
+            metric_type = 'runtime',
+            metric_name = f'Runtime training seconds (↓)',
+            metric_value = t3-t2,
+        ))
+        eval_results.append(EvalResult(
+            metric_type = 'runtime',
+            metric_name = f'Runtime eval seconds (~↓)',
+            metric_value = t4-t3,
+        ))
+
+        ################################
         if args.push_to_hub:
             save_model_card(
                 repo_id,
@@ -1037,7 +1334,18 @@ def main():
                 dataset_forget_name=args.dataset_forget_name,
                 dataset_retain_name=args.dataset_retain_name,
                 repo_folder=args.output_dir,
+                eval_results=eval_results,
+                tags = [
+                    "stable-diffusion",
+                    "stable-diffusion-diffusers",
+                    "text-to-image",
+                    "diffusers",
+                    "diffusers-training",
+                    "lora",
+                ],
+                # TODO: pass the cossine distances
             )
+
             upload_folder(
                 repo_id=repo_id,
                 folder_path=args.output_dir,
