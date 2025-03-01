@@ -60,7 +60,7 @@ from diffusers.utils import check_min_version, convert_state_dict_to_diffusers, 
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
-from huggingface_hub.repocard_data import EvalResult
+from huggingface_hub.repocard_data import EvalResult, ModelCardData
 
 import datasets
 from PIL import Image
@@ -119,8 +119,13 @@ These are LoRA adaption weights for {base_model}. The weights were fine-tuned fo
         model_description=model_description,
         inference=True,
     )
-    model_card.card_data_class.eval_results = eval_results
     model_card = populate_model_card(model_card, tags=tags)
+
+    model_card.data = ModelCardData(
+        model_name = repo_id,
+        eval_results=eval_results
+    )
+
     model_card.save(os.path.join(repo_folder, "README.md"))
 
 
@@ -204,10 +209,12 @@ def eval_text_to_image_unlearning(
     images = {}
 
     metric_common_attributes = {
+        "dataset_type": "inline-prompts",
         "task_type": "text-to-image",
     }
 
     for scope, prompts in {'forget': prompts_forget, 'retain': prompts_retain}.items():
+        metric_common_attributes["dataset_name"] = scope.capitalize() + " set"
         scores_original: List[float] = []
         scores_learned: List[float] = []
         scores_unlearned: List[float] = []
@@ -242,7 +249,8 @@ def eval_text_to_image_unlearning(
             axes[2].set_title(f"Unlearned\nClip Score={score_unlearned:.2f}")
             axes[2].axis("off")
             fig.suptitle(prompt, fontsize=16)
-            images[prompt] = Image.fromarray(np.uint8(fig.canvas.renderer._renderer))
+            fig.canvas.draw()
+            images[prompt] = Image.fromarray(np.uint8(np.array(fig.canvas.buffer_rgba())))
             plt.show()
 
         # Assemble metrics object
@@ -250,7 +258,7 @@ def eval_text_to_image_unlearning(
         # card_data_class: https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/repocard_data.py#L248
         # Some info about the fields:
         #   - task_type: str, https://hf.co/tasks
-        #   - dataset_type: str, hub ID, as searchable in https://hf.co/datasets
+        #   - dataset_type: str, hub ID, as searchable in https://hf.co/datasets, or at least satisfying the pattern `/^(?:[\w-]+\/)?[\w-.]+$/`
         #   - dataset_name: str, pretty name
         #   - metric_type: str, whenever possible should have these names: https://hf.co/metrics
         eval_results.append(EvalResult(
@@ -323,6 +331,7 @@ def eval_text_to_image_unlearning(
             **metric_common_attributes,
         ))
 
+    metric_common_attributes["dataset_name"] = "Forget and Retain sets"
     eval_results.append(EvalResult(
         metric_type = 'runtime',
         metric_name = 'Inference latency seconds mean(↓)',
@@ -1054,6 +1063,12 @@ def main():
         train_loss_retain = 0.0
         for step, batch_forget in enumerate(train_forget_dataloader):
             batch_retain = next(iter(train_retain_dataloader))
+            min_length = min(len(batch_forget["pixel_values"]), len(batch_retain["pixel_values"]))
+            batch_forget["pixel_values"] = batch_forget["pixel_values"][:min_length]
+            batch_retain["pixel_values"] = batch_retain["pixel_values"][:min_length]
+            batch_forget["input_ids"] = batch_forget["input_ids"][:min_length]
+            batch_retain["input_ids"] = batch_retain["input_ids"][:min_length]
+            assert batch_forget["pixel_values"].shape == batch_retain["pixel_values"].shape
             
             batch_forget["pixel_values"] = batch_forget["pixel_values"].to(accelerator.device)
             batch_retain["pixel_values"] = batch_retain["pixel_values"].to(accelerator.device)
@@ -1080,7 +1095,6 @@ def main():
                     noise_retain += args.noise_offset * torch.randn(
                         (latents_retain.shape[0], latents_retain.shape[1], 1, 1), device=latents_retain.device
                     )
-                    
 
                 bsz = latents_forget.shape[0]
                 # Sample a random timestep for each image
@@ -1092,7 +1106,7 @@ def main():
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 noisy_latents_forget = noise_scheduler.add_noise(latents_forget, noise_forget, timesteps_forget)
-                noisy_latents_retain = noise_scheduler.add_noise(latents_retain, noise_retain, timesteps_retain)
+                noisy_latents_retain = noise_scheduler.add_noise(latents_retain, noise_forget, timesteps_forget)
 
                 # Get the text embedding for conditioning
                 encoder_hidden_states_forget = text_encoder(batch_forget["input_ids"], return_dict=False)[0]
@@ -1300,29 +1314,40 @@ def main():
             eval_prompts_retain,
             judge_clip=ImageTextSimilarityJudge(metrics=['clip']),
         )
-        images += images2
+        images += [images2[path] for path in images2]
 
         t4 = time.time()
+
+
+        metric_common_attributes = {
+            "task_type": "text-to-image",
+            "dataset_type": f"forget-and-retain-together",
+            "dataset_name": f"{args.dataset_forget_name} (forget) and {args.dataset_retain_name} (retain) sets",
+        }
 
         eval_results.append(EvalResult(
             metric_type = 'runtime',
             metric_name = f'Runtime init seconds (~↓)',
             metric_value = t1-t0,
+            **metric_common_attributes,
         ))
         eval_results.append(EvalResult(
             metric_type = 'runtime',
             metric_name = f'Runtime data loading seconds (~↓)',
             metric_value = t2-t1,
+            **metric_common_attributes,
         ))
         eval_results.append(EvalResult(
             metric_type = 'runtime',
             metric_name = f'Runtime training seconds (↓)',
             metric_value = t3-t2,
+            **metric_common_attributes,
         ))
         eval_results.append(EvalResult(
             metric_type = 'runtime',
             metric_name = f'Runtime eval seconds (~↓)',
             metric_value = t4-t3,
+            **metric_common_attributes,
         ))
 
         ################################
