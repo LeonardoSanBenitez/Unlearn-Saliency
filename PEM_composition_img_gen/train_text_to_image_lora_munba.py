@@ -60,6 +60,7 @@ from diffusers.utils import check_min_version, convert_state_dict_to_diffusers, 
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
+from diffusers import AutoPipelineForText2Image, StableDiffusionPipeline
 from huggingface_hub.repocard_data import EvalResult, ModelCardData
 
 import datasets
@@ -73,6 +74,7 @@ import numpy as np
 from torchmetrics.functional.multimodal import clip_score
 from functools import partial
 from typing import Literal, List, Dict, Tuple, Optional, Callable, Union
+import json
 
 if is_wandb_available():
     import wandb
@@ -103,8 +105,9 @@ def save_model_card(
     '''
     img_str = ""
     for name, image in images.items():
-        image.save(os.path.join(repo_folder, f"{name}.png"))
-        img_str += f"![img]({name})\n"
+        path_relative = os.path.join("images", f"{name}.png")
+        image.save(os.path.join(repo_folder, path_relative))
+        img_str += f"![img]({path_relative})\n"
 
     # TODO: this description is not appearing in the model card
     model_description = f"""
@@ -126,19 +129,13 @@ These are LoRA adaption weights for {base_model}. The weights were fine-tuned fo
     model_card.data = ModelCardData(
         model_name = repo_id,
         eval_results=eval_results,
-        gradient_conflicts = {  # goes as kwargs
-            "forget": similarities_gf,
-            "retain": similarities_gr,
-        },
         hyperparameters=hyperparameters,  # goes as kwargs
     )
 
     model_card.save(os.path.join(repo_folder, "README.md"))
 
-
-
-from typing import Tuple
-from diffusers import AutoPipelineForText2Image, StableDiffusionPipeline
+    with open(os.path.join(repo_folder, "gradient_conflicts.json"), "w") as f:
+        json.dump({"forget": similarities_gf, "retain": similarities_gr}, f)
 
 
 ############################################
@@ -1180,10 +1177,8 @@ def main():
                 accelerator.backward(loss_retain)
                 grads_retain = [p.grad.clone() for p in unet.parameters() if p.requires_grad]
                 
-                
                 #for e in grads_forget:
                 #    print(e.shape)
-
 
                 # Stack gradients to form matrix G
                 G = torch.stack([
@@ -1200,19 +1195,16 @@ def main():
                 alpha = torch.tensor([alpha_retain, alpha_forget]).reshape(2, 1)  # Typical values seem to be things like [0.0016, -0.0029]
                 # print("Alpha in this iteration:", alpha)
 
-                # Compute parameter update (but don't manually modify .data)
                 G = G.to(accelerator.device)
                 alpha = alpha.to(accelerator.device)
-
+                
                 scaled_grad = G.T @ alpha
-                scaled_grad = scaled_grad * 1/(2*alpha.min())
+                # scaled_grad /= 2*torch.abs(alpha).min()
+                # scaled_grad /= 2*alpha.min()
+                # scaled_grad /= torch.norm(alpha)
 
                 similarities_gr.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_retain]), dim=0).item())
                 similarities_gf.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_forget]), dim=0).item())
-                
-                scaled_grad = G.T @ alpha
-                # scaled_grad /= 2*alpha.min()
-                scaled_grad /= torch.norm(alpha)
 
                 # Overwrite gradients for the optimizer
                 for param, update in zip((p for p in unet.parameters() if p.requires_grad), 

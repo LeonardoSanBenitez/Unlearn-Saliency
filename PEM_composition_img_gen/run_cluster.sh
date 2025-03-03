@@ -53,8 +53,8 @@ srun apptainer exec --nv run_cluster.sif accelerate launch --mixed_precision="fp
     --output_dir="./assets/lora/naruto" \
     --push_to_hub \
     --hub_model_id="LeonardoBenitez/sd-lora-naruto" \
-    --num_train_epochs=30 \
-    --validation_epochs=3 \
+    --num_train_epochs=60 \
+    --validation_epochs=10 \
     --checkpointing_steps=500 \
     --validation_prompt="A man with blue eyes." \
     --seed=42
