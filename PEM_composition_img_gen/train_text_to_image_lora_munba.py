@@ -1191,7 +1191,7 @@ def main():
                     torch.cat([g.view(-1) for g in grads_forget])
                 ])
                 K = G @ G.T  # Compute K = G^T G; It is a 2x2 tensor
-                
+                # K /= torch.norm(K)  # As recomended here: https://github.com/AvivNavon/nash-mtl/blob/main/methods/weight_methods.py#L231
                 
                 # Solve for α using narsh equation
                 k11, k12, k22 = K[0, 0], K[0, 1], K[1, 1]
@@ -1210,6 +1210,9 @@ def main():
                 similarities_gr.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_retain]), dim=0).item())
                 similarities_gf.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_forget]), dim=0).item())
                 
+                scaled_grad = G.T @ alpha
+                # scaled_grad /= 2*alpha.min()
+                scaled_grad /= torch.norm(alpha)
 
                 # Overwrite gradients for the optimizer
                 for param, update in zip((p for p in unet.parameters() if p.requires_grad), 
@@ -1302,7 +1305,7 @@ def main():
     images: Dict[str, Image] = {}
     similarities_gr = list(filter(lambda e: not np.isnan(e), similarities_gr))  # TODO: why are there nan values?
     similarities_gf = list(filter(lambda e: not np.isnan(e), similarities_gf))
-    images['histogram_conflict_gr'] = plot_gradient_conflict_hist(similarities_gr, r"Cosine Similarity between $\tilde{g}$ and $g_r$", "#1f77b4")
+    images['histogram_conflict_gr'] = plot_gradient_conflict_hist(similarities_gr, r"Cosine Similarity between $\tilde{g}$ and $g_r$", "#1f77b4")  # Another nice color: #f4b400
     images['histogram_conflict_gf'] = plot_gradient_conflict_hist(similarities_gf, r"Cosine Similarity between $\tilde{g}$ and $g_f$", "#1f77b4")
 
     accelerator.wait_for_everyone()
