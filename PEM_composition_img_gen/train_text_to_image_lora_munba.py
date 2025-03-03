@@ -87,24 +87,26 @@ logger = get_logger(__name__, log_level="INFO")
 
 def save_model_card(
     repo_id: str,
-    images: list = None,
+    images: Dict[str, Image.Image] = {},
     base_model: str = None,
     dataset_forget_name: str = None,
     dataset_retain_name: str = None,
     repo_folder: str = None,
     eval_results: List[EvalResult] = [],  # whenever possible, should have this names: https://huggingface.co/metrics
     tags: List[str] = [],
+    hyperparameters: dict = {},
+    similarities_gr: List[float] = [],
+    similarities_gf: List[float] = [],
 ):
     '''
-    
     the resulting file looks like this: https://github.com/huggingface/hub-docs/blob/main/modelcard.md
     '''
     img_str = ""
-    if images is not None:
-        for i, image in enumerate(images):
-            image.save(os.path.join(repo_folder, f"image_{i}.png"))
-            img_str += f"![img_{i}](./image_{i}.png)\n"
+    for name, image in images.items():
+        image.save(os.path.join(repo_folder, f"{name}.png"))
+        img_str += f"![img]({name})\n"
 
+    # TODO: this description is not appearing in the model card
     model_description = f"""
 # LoRA text2image fine-tuning - {repo_id}
 These are LoRA adaption weights for {base_model}. The weights were fine-tuned for forgetting {dataset_forget_name} dataset, while retaining {dataset_retain_name}. You can find some example images in the following. \n
@@ -123,7 +125,12 @@ These are LoRA adaption weights for {base_model}. The weights were fine-tuned fo
 
     model_card.data = ModelCardData(
         model_name = repo_id,
-        eval_results=eval_results
+        eval_results=eval_results,
+        gradient_conflicts = {  # goes as kwargs
+            "forget": similarities_gf,
+            "retain": similarities_gr,
+        },
+        hyperparameters=hyperparameters,  # goes as kwargs
     )
 
     model_card.save(os.path.join(repo_folder, "README.md"))
@@ -195,8 +202,6 @@ class ImageTextSimilarityJudge:
         return scores
 
 
-
-
 def eval_text_to_image_unlearning(
     pipeline_original: StableDiffusionPipeline,
     pipeline_learned: StableDiffusionPipeline,
@@ -204,7 +209,7 @@ def eval_text_to_image_unlearning(
     prompts_forget: List[str],
     prompts_retain: List[str],
     judge_clip: ImageTextSimilarityJudge,
-) -> Tuple[List[EvalResult], Dict[str, List[Image.Image]]]:
+) -> Tuple[List[EvalResult], Dict[str, Image.Image]]:
     eval_results = []
     images = {}
 
@@ -305,7 +310,7 @@ def eval_text_to_image_unlearning(
 
         eval_results.append(EvalResult(
             metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score difference between learned and unlearned ({"↑" if scope == "forget" else "↓"})',
+            metric_name = f'{scope.capitalize()}Set clip score difference between learned and unlearned mean ({"↑" if scope == "forget" else "↓"})',
             metric_value = float(np.mean(scores_difference_learned_unlearned)),
             **metric_common_attributes,
         ))
@@ -319,7 +324,7 @@ def eval_text_to_image_unlearning(
 
         eval_results.append(EvalResult(
             metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score difference between original and unlearned ({"↑" if scope == "forget" else "↓"})',
+            metric_name = f'{scope.capitalize()}Set clip score difference between original and unlearned mean ({"↑" if scope == "forget" else "↓"})',
             metric_value = float(np.mean(scores_difference_original_unlearned)),
             **metric_common_attributes,
         ))
@@ -358,7 +363,8 @@ def log_validation(
     accelerator,
     epoch,
     is_final_validation=False,
-):
+) -> Dict[str, Image.Image]:
+    images: Dict[str, Image.Image] = {}
     logger.info(
         f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
         f" {args.validation_prompt}."
@@ -368,31 +374,44 @@ def log_validation(
     generator = torch.Generator(device=accelerator.device)
     if args.seed is not None:
         generator = generator.manual_seed(args.seed)
-    images = []
     if torch.backends.mps.is_available():
         autocast_ctx = nullcontext()
     else:
         autocast_ctx = torch.autocast(accelerator.device.type)
 
     with autocast_ctx:
-        for _ in range(args.num_validation_images):
-            images.append(pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0])
+        for i in range(args.num_validation_images):
+            images[f"val_prompt_{i+1:02d}"] = pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0]
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
         if tracker.name == "tensorboard":
-            np_images = np.stack([np.asarray(img) for img in images])
+            np_images = np.stack([np.asarray(img) for img in images.values()])
             tracker.writer.add_images(phase_name, np_images, epoch, dataformats="NHWC")
         if tracker.name == "wandb":
             tracker.log(
                 {
                     phase_name: [
-                        wandb.Image(image, caption=f"{i}: {args.validation_prompt}") for i, image in enumerate(images)
+                        wandb.Image(image, caption=f"{name}: {args.validation_prompt}") for name, image in images.items()
                     ]
                 }
             )
     return images
 
+
+def plot_gradient_conflict_hist(similarities: List[float], title: str, color: str) -> Image.Image:
+    fig = plt.figure(figsize=(8, 5))
+    plt.hist(similarities, bins=50, color=color, alpha=0.75, label="Values")
+    plt.axvline(np.mean(similarities), color=color, linestyle='-.', linewidth=2, label="Avgerage")
+    plt.xlabel("Cosine Similarity")
+    plt.ylabel("Frequency")
+    plt.title(title)
+    #plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    fig.canvas.draw()
+    return Image.fromarray(np.uint8(np.array(fig.canvas.buffer_rgba())))
+
+############################################
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -1059,7 +1078,7 @@ def main():
 
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
-        train_loss_forget = 0.0
+        train_loss_forget = 0.0  # TODO: plot graph of losses after training
         train_loss_retain = 0.0
         for step, batch_forget in enumerate(train_forget_dataloader):
             batch_retain = next(iter(train_retain_dataloader))
@@ -1161,7 +1180,6 @@ def main():
                 accelerator.backward(loss_retain)
                 grads_retain = [p.grad.clone() for p in unet.parameters() if p.requires_grad]
                 
-                # TODO: append the cossine distance to the lists
                 
                 #for e in grads_forget:
                 #    print(e.shape)
@@ -1185,14 +1203,18 @@ def main():
                 # Compute parameter update (but don't manually modify .data)
                 G = G.to(accelerator.device)
                 alpha = alpha.to(accelerator.device)
-                
-                
-                scaled_grad = G.T @ alpha  # TODO: should this be multiplied by somethinglike 1/alpha?
 
-                # Assign updates as "fake gradients" for the optimizer
+                scaled_grad = G.T @ alpha
+                scaled_grad = scaled_grad * 1/(2*alpha.min())
+
+                similarities_gr.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_retain]), dim=0).item())
+                similarities_gf.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_forget]), dim=0).item())
+                
+
+                # Overwrite gradients for the optimizer
                 for param, update in zip((p for p in unet.parameters() if p.requires_grad), 
                                          torch.split(scaled_grad, [p.numel() for p in unet.parameters() if p.requires_grad])):
-                    param.grad = update.view(param.shape)  # Overwrite gradients
+                    param.grad = update.view(param.shape)
 
                 # Gradient clipping
                 if accelerator.sync_gradients:
@@ -1271,11 +1293,18 @@ def main():
                     variant=args.variant,
                     torch_dtype=weight_dtype,
                 )
-                images = log_validation(pipeline, args, accelerator, epoch)
+                _ = log_validation(pipeline, args, accelerator, epoch)
 
                 del pipeline
                 torch.cuda.empty_cache()
     
+
+    images: Dict[str, Image] = {}
+    similarities_gr = list(filter(lambda e: not np.isnan(e), similarities_gr))  # TODO: why are there nan values?
+    similarities_gf = list(filter(lambda e: not np.isnan(e), similarities_gf))
+    images['histogram_conflict_gr'] = plot_gradient_conflict_hist(similarities_gr, r"Cosine Similarity between $\tilde{g}$ and $g_r$", "#1f77b4")
+    images['histogram_conflict_gf'] = plot_gradient_conflict_hist(similarities_gf, r"Cosine Similarity between $\tilde{g}$ and $g_f$", "#1f77b4")
+
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         # Save the lora layers
@@ -1301,7 +1330,7 @@ def main():
                 torch_dtype=weight_dtype,
             )
             pipeline.load_lora_weights(args.output_dir)  # load attention processors
-            images = log_validation(pipeline, args, accelerator, epoch, is_final_validation=True)  # run inference
+            images.update(log_validation(pipeline, args, accelerator, epoch, is_final_validation=True))  # run inference
 
 
         #################################
@@ -1314,7 +1343,7 @@ def main():
             eval_prompts_retain,
             judge_clip=ImageTextSimilarityJudge(metrics=['clip']),
         )
-        images += [images2[path] for path in images2]
+        images.update(images2)
 
         t4 = time.time()
 
@@ -1368,7 +1397,9 @@ def main():
                     "diffusers-training",
                     "lora",
                 ],
-                # TODO: pass the cossine distances
+                hyperparameters=vars(args),
+                similarities_gr=similarities_gr,
+                similarities_gf=similarities_gf,
             )
 
             upload_folder(

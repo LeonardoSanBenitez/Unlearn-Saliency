@@ -20,17 +20,16 @@ run-local-clean:
 	make run-local
 
 run-cluster:
-	# TODO: automate the ssh connection, so this command can be run from any machine
-	# Take the ssh credentials from the .env file
+	# TODO: automate the ssh connection
 	if [ ! -f .env ]; then \
-		echo -e "You must configure the secrets with a local .env file. Exiting..."; \
+		echo "You must configure the secrets with a local .env file. Exiting..."; \
 		exit 1; \
 	fi;
 	if [ ! -f run_cluster.sif ]; then \
-		echo -e "Building run_cluster.sif..."; \
-		apptainer build run_cluster.sif run_cluster.def; \
+		echo "Building run_cluster.sif..."; \
+		apptainer build  --disable-cache run_cluster.sif run_cluster.def; \
 	else \
-		echo -e "run_cluster.sif already exists, skipping build..."; \
+		echo "run_cluster.sif already exists, skipping build..."; \
 	fi;
 
 	# Run locally for debug:
@@ -39,6 +38,7 @@ run-cluster:
 	sbatch run_cluster.sh
 
 run-cluster-clean:
+	# TODO: automate the ssh connection
 	rm -rf run_cluster.sif
 	apptainer cache clean -f
 	make run-cluster
@@ -47,16 +47,18 @@ stop-local:
 	docker-compose down
 
 stop-cluster:
+	# TODO: automate the ssh connection
 	scancel -u $$USER
 
 debug-last-cluster:
+	# TODO: automate the ssh connection
 	JOB_ID=$$(sacct -u $$USER --format=JobID,State,Start -n | sort -k3 -r | head -n 1 | awk '{print $$1}' | sed 's/\..*$$//')
-	echo -e "Latest Job ID: $$JOB_ID"
-	echo -e "\n\n-------\nJob details using sacct\n-------"
+	echo "Latest Job ID: $$JOB_ID"
+	echo "\n\n-------\nJob details using sacct\n-------"
 	sacct -j $$JOB_ID
-	echo -e "\n\n-------\nJob error\n-------"
+	echo "\n\n-------\nJob error\n-------"
 	cat assets/cluster_jobs/$${JOB_ID}-train-err
-	echo -e "\n\n-------\nJob output\n-------"
+	echo "\n\n-------\nJob output\n-------"
 	cat assets/cluster_jobs/$${JOB_ID}-train-out
 
 test: run-local

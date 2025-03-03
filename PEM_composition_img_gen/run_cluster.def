@@ -54,3 +54,9 @@ From: ubuntu:22.04
     poetry install --no-root --no-interaction --no-ansi
 
     git config --global --add safe.directory /src
+
+
+    # Add Jupyter notebook
+    poetry add jupyter pickleshare
+    wget -qO /usr/bin/tini https://github.com/krallin/tini/releases/download/v0.6.0/tini
+    chmod +x /usr/bin/tini
