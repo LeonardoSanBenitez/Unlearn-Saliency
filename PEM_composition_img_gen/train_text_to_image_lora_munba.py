@@ -1173,7 +1173,7 @@ def main():
                     torch.cat([g.view(-1) for g in grads_forget])
                 ])
                 K = G @ G.T  # Compute K = G^T G; It is a 2x2 tensor
-                
+                # K /= torch.norm(K)  # As recomended here: https://github.com/AvivNavon/nash-mtl/blob/main/methods/weight_methods.py#L231
                 
                 # Solve for α using narsh equation
                 k11, k12, k22 = K[0, 0], K[0, 1], K[1, 1]
@@ -1186,8 +1186,9 @@ def main():
                 G = G.to(accelerator.device)
                 alpha = alpha.to(accelerator.device)
                 
-                
-                scaled_grad = G.T @ alpha  # TODO: should this be multiplied by somethinglike 1/alpha?
+                scaled_grad = G.T @ alpha
+                # scaled_grad = scaled_grad * 1/(2*alpha.min())
+                scaled_grad /= torch.norm(alpha)
 
                 # Assign updates as "fake gradients" for the optimizer
                 for param, update in zip((p for p in unet.parameters() if p.requires_grad), 
