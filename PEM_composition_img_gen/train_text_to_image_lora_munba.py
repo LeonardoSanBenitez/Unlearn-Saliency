@@ -103,6 +103,8 @@ def save_model_card(
     '''
     the resulting file looks like this: https://github.com/huggingface/hub-docs/blob/main/modelcard.md
     '''
+    os.makedirs(os.path.join(repo_folder, "images"), exist_ok=True)
+
     img_str = ""
     for name, image in images.items():
         path_relative = os.path.join("images", f"{name}.png")
