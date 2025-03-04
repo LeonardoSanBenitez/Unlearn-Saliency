@@ -77,7 +77,15 @@ from typing import Literal, List, Dict, Tuple, Optional, Callable, Union
 import json
 
 if is_wandb_available():
-    import wandb
+    from libs.integrations.wandb import wandb_log_image
+from libs.integrations.tensorboard import tensorboard_log_image
+
+import sys
+sys.path.append('..')
+from libs.metrics import MetricImageTextSimilarity
+from libs.evaluator import EvaluatorTextToImage
+
+
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("0.33.0.dev0")
@@ -171,188 +179,7 @@ def unlearn_lora(model_original_id: str, model_lora_id: str, device: str) -> Tup
 ############################################
 # Evaluation utilities
 ############################################
-class ImageTextSimilarityJudge:
-    metrics: List[Literal['clip']]
-    _clip_score_fn: Optional[Callable]
 
-    def __init__(self, metrics: List[Literal['clip']]):
-        self.metrics = metrics
-
-        # Download the models for the LPIPS metrics, if required
-        if 'clip' in self.metrics:
-            self._clip_score_fn = partial(clip_score, model_name_or_path="openai/clip-vit-base-patch16")
-
-    def evaluate(self, image: Union[Image.Image, np.ndarray], text: str) -> Dict[str, float]:
-        scores: Dict[str, float] = {}
-
-        # Preprocess
-        image_np: np.ndarray
-        if isinstance(image, Image.Image):
-            image_np = np.array(image)
-        else:
-            image_np = image
-        image_int = (image_np * 255).astype("uint8")
-
-        # Calculate
-        for metric in self.metrics:
-            if metric == 'clip':
-                assert self._clip_score_fn is not None
-                scores[metric] = float(self._clip_score_fn(torch.from_numpy(image_int), text).detach())
-        return scores
-
-
-def eval_text_to_image_unlearning(
-    pipeline_original: StableDiffusionPipeline,
-    pipeline_learned: StableDiffusionPipeline,
-    pipeline_unlearned: StableDiffusionPipeline,
-    prompts_forget: List[str],
-    prompts_retain: List[str],
-    judge_clip: ImageTextSimilarityJudge,
-) -> Tuple[List[EvalResult], Dict[str, Image.Image]]:
-    eval_results = []
-    images = {}
-
-    metric_common_attributes = {
-        "dataset_type": "inline-prompts",
-        "task_type": "text-to-image",
-    }
-
-    for scope, prompts in {'forget': prompts_forget, 'retain': prompts_retain}.items():
-        metric_common_attributes["dataset_name"] = scope.capitalize() + " set"
-        scores_original: List[float] = []
-        scores_learned: List[float] = []
-        scores_unlearned: List[float] = []
-        scores_difference_learned_unlearned: List[float] = []
-        scores_difference_original_unlearned: List[float] = []
-        latencies: List[float] = []
-
-        for prompt in prompts:
-            t0 = time.time()
-            image_original = pipeline_original(prompt).images[0]
-            image_learned = pipeline_learned(prompt).images[0]
-            image_unlearned = pipeline_unlearned(prompt).images[0]
-            latencies.append((time.time() - t0)/3)
-
-            score_original = judge_clip.evaluate(image_original, prompt)['clip']
-            score_learned = judge_clip.evaluate(image_learned, prompt)['clip']
-            score_unlearned = judge_clip.evaluate(image_unlearned, prompt)['clip']
-            scores_original.append(score_original)
-            scores_learned.append(score_learned)
-            scores_unlearned.append(score_unlearned)
-            scores_difference_learned_unlearned.append(score_learned - score_unlearned)
-            scores_difference_original_unlearned.append(score_original - score_unlearned)
-
-            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-            axes[0].imshow(image_original)
-            axes[0].set_title(f"Original\nClip Score={score_original:.2f}")
-            axes[0].axis("off")
-            axes[1].imshow(image_learned)
-            axes[1].set_title(f"Learned\nClip Score={score_learned:.2f}")
-            axes[1].axis("off")
-            axes[2].imshow(image_unlearned)
-            axes[2].set_title(f"Unlearned\nClip Score={score_unlearned:.2f}")
-            axes[2].axis("off")
-            fig.suptitle(prompt, fontsize=16)
-            fig.canvas.draw()
-            images[prompt] = Image.fromarray(np.uint8(np.array(fig.canvas.buffer_rgba())))
-            plt.show()
-
-        # Assemble metrics object
-        # EvalResult: https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/repocard_data.py#L13
-        # card_data_class: https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/repocard_data.py#L248
-        # Some info about the fields:
-        #   - task_type: str, https://hf.co/tasks
-        #   - dataset_type: str, hub ID, as searchable in https://hf.co/datasets, or at least satisfying the pattern `/^(?:[\w-]+\/)?[\w-.]+$/`
-        #   - dataset_name: str, pretty name
-        #   - metric_type: str, whenever possible should have these names: https://hf.co/metrics
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score of original model mean (~↑)',
-            metric_value = float(np.mean(scores_original)),
-            **metric_common_attributes,
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score of original model std (~↓)',
-            metric_value = float(np.std(scores_original)),
-            **metric_common_attributes,
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score of learned model mean ({"~↑" if scope == "forget" else "~"})',
-            metric_value = float(np.mean(scores_learned)),
-            **metric_common_attributes,
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score of learned model std (~↓)',
-            metric_value = float(np.std(scores_learned)),
-            **metric_common_attributes,
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score of unlearned model mean ({"↓" if scope == "forget" else "↑"})',
-            metric_value = float(np.mean(scores_unlearned)),
-            **metric_common_attributes,
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score of unlearned model std (~↓)',
-            metric_value = float(np.std(scores_unlearned)),
-            **metric_common_attributes,
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score difference between learned and unlearned mean ({"↑" if scope == "forget" else "↓"})',
-            metric_value = float(np.mean(scores_difference_learned_unlearned)),
-            **metric_common_attributes,
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score difference between learned and unlearned std (~↓)',
-            metric_value = float(np.std(scores_difference_learned_unlearned)),
-            **metric_common_attributes,
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score difference between original and unlearned mean ({"↑" if scope == "forget" else "↓"})',
-            metric_value = float(np.mean(scores_difference_original_unlearned)),
-            **metric_common_attributes,
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type = 'clip',
-            metric_name = f'{scope.capitalize()}Set clip score difference between original and unlearned std (~↓)',
-            metric_value = float(np.std(scores_difference_original_unlearned)),
-            **metric_common_attributes,
-        ))
-
-    metric_common_attributes["dataset_name"] = "Forget and Retain sets"
-    eval_results.append(EvalResult(
-        metric_type = 'runtime',
-        metric_name = 'Inference latency seconds mean(↓)',
-        metric_value = float(np.mean(latencies)),
-        **metric_common_attributes,
-    ))
-
-    eval_results.append(EvalResult(
-        metric_type = 'runtime',
-        metric_name = 'Inference latency seconds std(~↓)',
-        metric_value = float(np.std(latencies)),
-        **metric_common_attributes,
-    ))
-
-
-
-    return eval_results, images
 
 
 
@@ -385,16 +212,10 @@ def log_validation(
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
         if tracker.name == "tensorboard":
-            np_images = np.stack([np.asarray(img) for img in images.values()])
-            tracker.writer.add_images(phase_name, np_images, epoch, dataformats="NHWC")
+            tensorboard_log_image(tracker, phase_name, args.validation_prompt, epoch, images)
         if tracker.name == "wandb":
-            tracker.log(
-                {
-                    phase_name: [
-                        wandb.Image(image, caption=f"{name}: {args.validation_prompt}") for name, image in images.items()
-                    ]
-                }
-            )
+            wandb_log_image(tracker, phase_name, args.validation_prompt, epoch, images)
+
     return images
 
 
@@ -1332,14 +1153,17 @@ def main():
 
         #################################
         pipeline_original, pipeline_learned, pipeline_unlearned = unlearn_lora(args.pretrained_model_name_or_path, args.output_dir, device=accelerator.device)
-        eval_results, images2 = eval_text_to_image_unlearning(
+
+        evaluator = EvaluatorTextToImage(
             pipeline_original,
             pipeline_learned,
             pipeline_unlearned,
             eval_prompts_forget,
             eval_prompts_retain,
-            judge_clip=ImageTextSimilarityJudge(metrics=['clip']),
+            metric_clip=MetricImageTextSimilarity(metrics=['clip']),
         )
+
+        eval_results, images2 = evaluator.evaluate()
         images.update(images2)
 
         t4 = time.time()

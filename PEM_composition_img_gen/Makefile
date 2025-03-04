@@ -62,4 +62,15 @@ debug-last-cluster:
 	cat assets/cluster_jobs/$${JOB_ID}-train-out
 
 test: run-local
-	# pass
+	echo "\n\n------------------------\nMypy Check\n------------------------"
+	docker-compose exec notebooks poetry run mypy --install-types --non-interactive > /dev/null 2>&1  # hidden output
+	docker-compose exec notebooks poetry run mypy --no-warn-incomplete-stub --disable-error-code import-untyped --explicit-package-bases /libs
+
+	echo "\n\n------------------------\nPycodestyle Check\n------------------------"
+	docker-compose exec notebooks poetry run pycodestyle --max-line-length=200 --ignore=E701 /libs
+
+	echo "\n\n-------\nPytest checks\n-------"
+	docker-compose exec notebooks poetry run pytest /tests
+	# Manual tests (requires things like connecting some hardware or doing something interactive)
+	# poetry run pytest /tests/**/manual_*.py
+	# poetry run pytest --capture=no -k "test_example" /tests/**/manual_example.py

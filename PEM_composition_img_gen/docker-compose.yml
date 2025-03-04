@@ -1,7 +1,7 @@
 version: "3.5"
 services:
   notebooks:
-    container_name: unlearning-notebooks-PEM-text
+    container_name: unlearning-notebooks
     build: 
       context: .
       dockerfile: Dockerfile
@@ -9,6 +9,7 @@ services:
     volumes:
       - ./:/src
       - ../libs:/libs
+      - ../tests:/tests
     environment:
       - PYTHONPATH=.:/src:/libs:/
     ports:

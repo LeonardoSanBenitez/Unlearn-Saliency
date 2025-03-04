@@ -7,7 +7,6 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "~3.10"
-python-dotenv = "*"
 Pillow = "*"
 accelerate = ">=0.31.0"
 compel = "==0.1.8"
@@ -53,6 +52,15 @@ phonemizer = "*"
 torchmetrics = "*"
 opencv-python = "*"
 matplotlib = "^3.10.0"
+pydantic = "*"
+lpips = "*"
+image-similarity-measures = "*"
+
+# Needed only for development
+python-dotenv = "~1.0"
+mypy = "~1.12"
+pycodestyle = "~2.12"
+pytest-asyncio = "^0.24.0"
 
 [build-system]
 requires = ["poetry-core"]
