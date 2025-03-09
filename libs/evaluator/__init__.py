@@ -92,7 +92,7 @@ class EvaluatorTextToImage(BaseModel):
 
             eval_results.append(EvalResult(
                 metric_type='clip',
-                metric_name=f'{scope.capitalize()}Set clip score of learned model mean ({"~↑" if scope == "forget" else "~"})',
+                metric_name=f'{scope.capitalize()}Set clip score of learned model mean ({"~↑" if scope == "forget" else "~↓"})',
                 metric_value=float(np.mean(scores_learned)),
                 **metric_common_attributes,  # type: ignore
             ))
