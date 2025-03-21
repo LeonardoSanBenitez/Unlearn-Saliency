@@ -37,6 +37,7 @@ from libs.evaluator import EvaluatorTextToImage, plot_gradient_conflict_hist, lo
 from libs.utils.logger import get_logger
 from libs.utils.model_management import save_model_card
 from libs.utils.training import unwrap_model, preprocess_train, collate_fn
+from libs.utils.gradient_weighting import GradientWeightingMethod
 from libs.unlearner.base import Unlearner
 
 
@@ -94,8 +95,12 @@ class UnlearnerLora(Unlearner):
     revision: Optional[str] = Field(None, description="Revision of pretrained model identifier from huggingface.co/models.")
     variant: Optional[str] = Field(None, description="Variant of the model files of the pretrained model identifier from huggingface.co/models, e.g., fp16.")
     
-    dataset_forget_name: Optional[str] = Field(None, description="The name or path of the dataset to be forgotten.")
-    dataset_retain_name: Optional[str] = Field(None, description="The name or path of the dataset to be retained.")
+    gradient_weighting_method: GradientWeightingMethod = Field(..., description="The method to use for weighting the gradients.")
+    compute_gradient_conflict: bool = Field(True, description="Whether to compute the gradient conflict, for evaluation purposes.")
+    compute_runtimes: bool = Field(True, description="Whether to compute the runtimes of the training, for evaluation purposes.")
+
+    dataset_forget_name: str = Field(..., description="The name or path of the dataset to be forgotten.")
+    dataset_retain_name: str = Field(..., description="The name or path of the dataset to be retained.")
     dataset_forget_config_name: Optional[str] = Field(None, description="The config of the dataset for forgetting, leave as None if there's only one config.")
     dataset_retain_config_name: Optional[str] = Field(None, description="The config of the dataset for retaining, leave as None if there's only one config.")
 
@@ -562,32 +567,11 @@ class UnlearnerLora(Unlearner):
                     
                     #for e in grads_forget:
                     #    print(e.shape)
+                    scaled_grad = self.gradient_weighting_method.weight_grads(grads_forget, grads_retain, accelerator)
 
-                    # Stack gradients to form matrix G
-                    G = torch.stack([
-                        torch.cat([g.view(-1) for g in grads_retain]),
-                        torch.cat([g.view(-1) for g in grads_forget])
-                    ])
-                    K = G @ G.T  # Compute K = G^T G; It is a 2x2 tensor
-                    # K /= torch.norm(K)  # As recomended here: https://github.com/AvivNavon/nash-mtl/blob/main/methods/weight_methods.py#L231
-                    
-                    # Solve for α using narsh equation
-                    k11, k12, k22 = K[0, 0], K[0, 1], K[1, 1]
-                    alpha_retain = torch.sqrt((2 * k11 * k22 + k12 * torch.sqrt(k11 * k22)) / (k11**2 * k22 - k11 * k12**2))    # This is a Tensor of shape [], aka is a float
-                    alpha_forget = (1 - k11 * alpha_retain**2) / (k12 * alpha_retain)    
-                    alpha = torch.tensor([alpha_retain, alpha_forget]).reshape(2, 1)  # Typical values seem to be things like [0.0016, -0.0029]
-                    # print("Alpha in this iteration:", alpha)
-
-                    G = G.to(accelerator.device)
-                    alpha = alpha.to(accelerator.device)
-                    
-                    scaled_grad = G.T @ alpha
-                    # scaled_grad /= 2*torch.abs(alpha).min()
-                    # scaled_grad /= 2*alpha.min()
-                    # scaled_grad /= torch.norm(alpha)
-
-                    similarities_gr.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_retain]), dim=0).item())
-                    similarities_gf.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_forget]), dim=0).item())
+                    if self.compute_gradient_conflict:
+                        similarities_gr.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_retain]), dim=0).item())
+                        similarities_gf.append(F.cosine_similarity(scaled_grad[:, 0], torch.cat([g.view(-1) for g in grads_forget]), dim=0).item())
 
                     # Overwrite gradients for the optimizer
                     for param, update in zip((p for p in unet.parameters() if p.requires_grad), 
@@ -677,10 +661,11 @@ class UnlearnerLora(Unlearner):
                     torch.cuda.empty_cache()
 
         images: Dict[str, Image] = {}
-        similarities_gr = list(filter(lambda e: not np.isnan(e), similarities_gr))  # TODO: why are there nan values?
-        similarities_gf = list(filter(lambda e: not np.isnan(e), similarities_gf))
-        images['histogram_conflict_gr'] = plot_gradient_conflict_hist(similarities_gr, r"Cosine Similarity between $\tilde{g}$ and $g_r$", "#1f77b4")  # Another nice color: #f4b400
-        images['histogram_conflict_gf'] = plot_gradient_conflict_hist(similarities_gf, r"Cosine Similarity between $\tilde{g}$ and $g_f$", "#1f77b4")
+        if self.compute_gradient_conflict:
+            similarities_gr = list(filter(lambda e: not np.isnan(e), similarities_gr))  # TODO: why are there nan values?
+            similarities_gf = list(filter(lambda e: not np.isnan(e), similarities_gf))
+            images['histogram_conflict_gr'] = plot_gradient_conflict_hist(similarities_gr, r"Cosine Similarity between $\tilde{g}$ and $g_r$", "#1f77b4")  # Another nice color: #f4b400
+            images['histogram_conflict_gf'] = plot_gradient_conflict_hist(similarities_gf, r"Cosine Similarity between $\tilde{g}$ and $g_f$", "#1f77b4")
 
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
@@ -717,6 +702,7 @@ class UnlearnerLora(Unlearner):
                 prompts_forget=self.final_eval_prompts_forget,
                 prompts_retain=self.final_eval_prompts_retain,
                 metric_clip=MetricImageTextSimilarity(metrics=['clip']),
+                compute_runtimes=self.compute_runtimes,
             )
 
             eval_results, images2 = evaluator.evaluate()
@@ -730,30 +716,32 @@ class UnlearnerLora(Unlearner):
                 "dataset_name": f"{self.dataset_forget_name} (forget) and {self.dataset_retain_name} (retain) sets",
             }
 
-            eval_results.append(EvalResult(
-                metric_type = 'runtime',
-                metric_name = f'Runtime init seconds (~↓)',
-                metric_value = t1-t0,
-                **metric_common_attributes,
-            ))
-            eval_results.append(EvalResult(
-                metric_type = 'runtime',
-                metric_name = f'Runtime data loading seconds (~↓)',
-                metric_value = t2-t1,
-                **metric_common_attributes,
-            ))
-            eval_results.append(EvalResult(
-                metric_type = 'runtime',
-                metric_name = f'Runtime training seconds (↓)',
-                metric_value = t3-t2,
-                **metric_common_attributes,
-            ))
-            eval_results.append(EvalResult(
-                metric_type = 'runtime',
-                metric_name = f'Runtime eval seconds (~↓)',
-                metric_value = t4-t3,
-                **metric_common_attributes,
-            ))
+
+            if self.compute_runtimes:
+                eval_results.append(EvalResult(
+                    metric_type = 'runtime',
+                    metric_name = f'Runtime init seconds (~↓)',
+                    metric_value = t1-t0,
+                    **metric_common_attributes,
+                ))
+                eval_results.append(EvalResult(
+                    metric_type = 'runtime',
+                    metric_name = f'Runtime data loading seconds (~↓)',
+                    metric_value = t2-t1,
+                    **metric_common_attributes,
+                ))
+                eval_results.append(EvalResult(
+                    metric_type = 'runtime',
+                    metric_name = f'Runtime training seconds (↓)',
+                    metric_value = t3-t2,
+                    **metric_common_attributes,
+                ))
+                eval_results.append(EvalResult(
+                    metric_type = 'runtime',
+                    metric_name = f'Runtime eval seconds (~↓)',
+                    metric_value = t4-t3,
+                    **metric_common_attributes,
+                ))
 
             ################################
             if self.push_to_hub:
@@ -787,4 +775,4 @@ class UnlearnerLora(Unlearner):
 
         accelerator.end_training()
 
-        logger.info('wow!')
+        logger.info('Training completed successfully =D')

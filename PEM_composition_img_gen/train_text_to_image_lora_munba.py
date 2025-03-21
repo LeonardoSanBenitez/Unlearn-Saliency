@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 # coding=utf-8
+
+# DEPRECATED
+# Please use UnlearnerLora with GradientWeightingMethodMunba
+
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -553,7 +557,7 @@ def main():
         #"A cartoon character",
         #"Many people from the series Naruto laughing and hugging each other as a family",
     ]
-
+    
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)

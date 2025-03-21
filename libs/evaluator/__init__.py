@@ -29,6 +29,7 @@ class EvaluatorTextToImage(BaseModel):
     prompts_forget: List[str]
     prompts_retain: List[str]
     metric_clip: MetricImageTextSimilarity
+    compute_runtimes: bool = True
 
     def evaluate(self) -> Tuple[List[EvalResult], Dict[str, Image.Image]]:
         eval_results = []
@@ -157,20 +158,21 @@ class EvaluatorTextToImage(BaseModel):
                 **metric_common_attributes,  # type: ignore
             ))
 
-        metric_common_attributes["dataset_name"] = "Forget and Retain sets"
-        eval_results.append(EvalResult(
-            metric_type='runtime',
-            metric_name='Inference latency seconds mean(↓)',
-            metric_value=float(np.mean(latencies)),
-            **metric_common_attributes,  # type: ignore
-        ))
-
-        eval_results.append(EvalResult(
-            metric_type='runtime',
-            metric_name='Inference latency seconds std(~↓)',
-            metric_value=float(np.std(latencies)),
-            **metric_common_attributes,  # type: ignore
-        ))
+        if self.compute_runtimes:
+            metric_common_attributes["dataset_name"] = "Forget and Retain sets"
+            eval_results.append(EvalResult(
+                metric_type='runtime',
+                metric_name='Inference latency seconds mean(↓)',
+                metric_value=float(np.mean(latencies)),
+                **metric_common_attributes,  # type: ignore
+            ))
+    
+            eval_results.append(EvalResult(
+                metric_type='runtime',
+                metric_name='Inference latency seconds std(~↓)',
+                metric_value=float(np.std(latencies)),
+                **metric_common_attributes,  # type: ignore
+            ))
 
         return eval_results, images
 

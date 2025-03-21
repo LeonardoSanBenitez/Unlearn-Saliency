@@ -63,7 +63,9 @@ These are LoRA adaption weights for {base_model}. The weights were fine-tuned fo
     )
 
     model_card.save(os.path.join(repo_folder, "README.md"))
-
-    with open(os.path.join(repo_folder, "gradient_conflicts.json"), "w") as f:
-        json.dump({"forget": similarities_gf, "retain": similarities_gr}, f)
     logger.info(f"Model card saved to {repo_folder}")
+
+    if len(similarities_gf)>0 or len(similarities_gr)>0:
+        logger.info('Saving gradient conflicts')
+        with open(os.path.join(repo_folder, "gradient_conflicts.json"), "w") as f:
+            json.dump({"forget": similarities_gf, "retain": similarities_gr}, f)
