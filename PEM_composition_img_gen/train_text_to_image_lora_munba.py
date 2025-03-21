@@ -75,6 +75,8 @@ from torchmetrics.functional.multimodal import clip_score
 from functools import partial
 from typing import Literal, List, Dict, Tuple, Optional, Callable, Union
 import json
+import sys
+sys.path.append('..')  # TODO: configure this at apptainer level
 
 if is_wandb_available():
     from libs.integrations.wandb import wandb_log_image
@@ -528,28 +530,28 @@ def main():
     # TODO: how to flexibly receive these prompts?
     # I want to support 2 cases: when the prompts are given directly (aka list of strings), or when only the dateset ID is given and the prompts are in huggingface
     eval_prompts_forget = [
-        "A naruto with blue eyes",
-        "One naruto character with dark hair and brown eyes",
-        "Naruto in a blue shirt and headband",
-        "Naruto with a white hat and a red cross on his head",
-        "Naruto in armor standing in front of a blue background",
-        "A character from the anime naruto with yellow air and orange clothing, hand drawn",
+        #"A naruto with blue eyes",
+        #"One naruto character with dark hair and brown eyes",
+        #"Naruto in a blue shirt and headband",
+        #"Naruto with a white hat and a red cross on his head",
+        #"Naruto in armor standing in front of a blue background",
+        #"A character from the anime naruto with yellow air and orange clothing, hand drawn",
         "A woman from the anime naruto, wearing clothing from the anime, standing in front of a traditional building",
-        "An anime character in a white suit with a purple face, drawn in naruto-style",
-        "Naruto",
-        "Many characters from the series Naruto laughing and hugging each other as a family",
+        #"An anime character in a white suit with a purple face, drawn in naruto-style",
+        #"Naruto",
+        #"Many characters from the series Naruto laughing and hugging each other as a family",
     ]
     eval_prompts_retain = [
         "A man with blue eyes",
-        "One person with dark hair and brown eyes",
-        "A man in a blue shirt and headband",
-        "A man with a white hat and a red cross on his head",
-        "A man in armor standing in front of a blue background",
-        "A character with yellow air and orange clothing, hand drawn",
-        "A woman in a suit and tie standing in front of a building",
-        "An cartoon character in a white suit with a purple face",
-        "A cartoon character",
-        "Many people from the series Naruto laughing and hugging each other as a family",
+        #"One person with dark hair and brown eyes",
+        #"A man in a blue shirt and headband",
+        #"A man with a white hat and a red cross on his head",
+        #"A man in armor standing in front of a blue background",
+        #"A character with yellow air and orange clothing, hand drawn",
+        #"A woman in a suit and tie standing in front of a building",
+        #"An cartoon character in a white suit with a purple face",
+        #"A cartoon character",
+        #"Many people from the series Naruto laughing and hugging each other as a family",
     ]
 
     logging_dir = Path(args.output_dir, args.logging_dir)
@@ -1155,11 +1157,11 @@ def main():
         pipeline_original, pipeline_learned, pipeline_unlearned = unlearn_lora(args.pretrained_model_name_or_path, args.output_dir, device=accelerator.device)
 
         evaluator = EvaluatorTextToImage(
-            pipeline_original,
-            pipeline_learned,
-            pipeline_unlearned,
-            eval_prompts_forget,
-            eval_prompts_retain,
+            pipeline_original=pipeline_original,
+            pipeline_learned=pipeline_learned,
+            pipeline_unlearned=pipeline_unlearned,
+            prompts_forget=eval_prompts_forget,
+            prompts_retain=eval_prompts_retain,
             metric_clip=MetricImageTextSimilarity(metrics=['clip']),
         )
 
