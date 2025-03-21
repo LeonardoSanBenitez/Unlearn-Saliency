@@ -154,6 +154,13 @@ def parse_args():
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
+        "--lora_name_or_path",
+        type=str,
+        default=None,
+        required=False,
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
         "--revision",
         type=str,
         default=None,
@@ -438,6 +445,7 @@ DATASET_NAME_MAPPING = {
 
 def main():
     args = parse_args()
+    print(args)
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
@@ -515,20 +523,110 @@ def main():
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
 
-    unet_lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.rank,
-        init_lora_weights="gaussian",
-        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-    )
-
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
 
-    # Add adapter and make sure the trainable params are in float32.
-    unet.add_adapter(unet_lora_config)
+    if args.lora_name_or_path and args.lora_name_or_path != "None":
+        logger.info(f"Load existing LoRA weights {args.lora_name_or_path}")
+        # There are many waits of loading LoRA for training, and it can be quite tricky (often it does not return errors, but actually the lora was init from scratch instead of loading)
+
+        ###################################################
+        # Loading option 1
+        # Problem: weights seem to be init from gaussian, that is not what the base_model_name_or_path param is for
+        '''
+        unet.add_adapter(LoraConfig(
+            r=args.rank,
+            lora_alpha=args.rank,
+            #init_lora_weights="gaussian",
+            base_model_name_or_path="./assets/loop_vangogh/iteration_02",
+            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        ))
+        
+        print(unet.peft_config)
+        lora_layers = list(filter(lambda p: p.requires_grad, unet.parameters()))
+        print(lora_layers[0])
+        print(lora_layers[1])
+        print(lora_layers[2])
+        ''';
+        
+        ###################################################
+        # Loading option 2
+        # Error: targets [...] not found in the base model.
+        '''
+        unet.load_lora_adapter("./assets/loop_vangogh/iteration_02/pytorch_lora_weights.safetensors", strict=False)
+        
+        print(unet.peft_config)
+        lora_layers = list(filter(lambda p: p.requires_grad, unet.parameters()))
+        print(lora_layers[0])
+        print(lora_layers[1])
+        print(lora_layers[2])
+        ''';
+        
+        ###################################################
+        # Loading option 3
+        # Error: targets [...] not found in the base model.
+        '''
+        unet.add_adapter(LoraConfig(
+            r=args.rank,
+            lora_alpha=args.rank,
+            init_lora_weights="gaussian",
+            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        ))
+        
+        unet.load_lora_adapter("./assets/loop_vangogh/iteration_02/pytorch_lora_weights.safetensors", strict=False)
+        
+        print(unet.peft_config)
+        lora_layers = list(filter(lambda p: p.requires_grad, unet.parameters()))
+        print(lora_layers[0])
+        print(lora_layers[1])
+        print(lora_layers[2])
+        ''';
+        
+        
+        ###################################################
+        # Loading option 4
+        '''
+        unet.add_adapter(LoraConfig(
+            r=args.rank,
+            lora_alpha=args.rank,
+            init_lora_weights="gaussian",
+            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        ))
+        
+        lora_state_dict = load_file(f"{args.lora_name_or_path}/pytorch_lora_weights.safetensors")
+        set_peft_model_state_dict(unet, lora_state_dict, adapter_name="default")
+        print(lora_state_dict['unet.down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_q.lora.down.weight'])
+        print(lora_state_dict['unet.down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_q.lora.up.weight'])
+        print(lora_state_dict['unet.down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_k.lora.down.weight'])
+        ''';
+        
+        ###################################################
+        # Loading option 5
+        from diffusers import AutoPipelineForText2Image
+        pipeline_learned = AutoPipelineForText2Image.from_pretrained(args.pretrained_model_name_or_path, torch_dtype=torch.float16, safety_checker=None).to("cuda")
+        pipeline_learned.load_lora_weights(args.lora_name_or_path, weight_name="pytorch_lora_weights.safetensors", adapter_name='default')
+        unet = pipeline_learned.unet
+        for name, param in unet.named_parameters():
+            if "lora" in name.lower():
+                logging.debug(f'enalbing grad for {name}')
+                param.requires_grad_(True)
+        
+        #unwrapped_unet = unwrap_model(unet)
+        #unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
+        #print(lora_state_dict['unet.down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_q.lora.down.weight'])
+        #print(lora_state_dict['unet.down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_q.lora.up.weight'])
+        #print(lora_state_dict['unet.down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_k.lora.down.weight'])
+    else:
+        logger.info("Initializing new LoRA")
+        unet.add_adapter(LoraConfig(
+            r=args.rank,
+            lora_alpha=args.rank,
+            init_lora_weights="gaussian",
+            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        ))
+
     if args.mixed_precision == "fp16":
         # only upcast trainable parameters (LoRA) into fp32
         cast_training_params(unet, dtype=torch.float32)
@@ -546,7 +644,10 @@ def main():
         else:
             raise ValueError("xformers is not available. Make sure it is installed correctly")
 
+
+    #print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> LORA WEIGHTS BEFORE TRAINING: ', list(filter(lambda p: p.requires_grad, unet.parameters())))
     lora_layers = filter(lambda p: p.requires_grad, unet.parameters())
+
 
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
@@ -931,6 +1032,7 @@ def main():
 
         unwrapped_unet = unwrap_model(unet)
         unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
+        #print('????????????????????????? LORA WEIGHTS AFTER TRAINING: ', unet_lora_state_dict)
         StableDiffusionPipeline.save_lora_weights(
             save_directory=args.output_dir,
             unet_lora_layers=unet_lora_state_dict,

@@ -54,7 +54,7 @@ class UnlearnDataset(BaseModel, ABC):
         # TODO: using pydantic's model_post_init makes this hard to debug... maybe just overwritting the constructor is better
         self._load()
         self._split()
-        assert set([e.value for e in UnlearnDatasetSplit]) == set([key.value for key in list(splitted.keys())]), "All possible splits should be filled"
+        assert set([e.value for e in UnlearnDatasetSplit]) == set([key.value for key in list(self._dataset_splits.keys())]), "All possible splits should be filled"
         pass
 
     @abstractmethod
