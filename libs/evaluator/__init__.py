@@ -1,13 +1,24 @@
 import time
-from typing import Literal, List, Dict, Tuple, Optional, Callable, Union
+from typing import List, Dict, Tuple
 from pydantic import BaseModel, ConfigDict
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
+from contextlib import nullcontext
 
+import torch
 from diffusers import StableDiffusionPipeline
+from diffusers.utils import check_min_version, convert_state_dict_to_diffusers, is_wandb_available
 from huggingface_hub.repocard_data import EvalResult
+
 from libs.metrics import MetricImageTextSimilarity
+from libs.utils.logger import get_logger
+if is_wandb_available():
+    from libs.integrations.wandb import wandb_log_image
+from libs.integrations.tensorboard import tensorboard_log_image
+
+
+logger = get_logger('evaluation')
 
 
 class EvaluatorTextToImage(BaseModel):
@@ -162,3 +173,59 @@ class EvaluatorTextToImage(BaseModel):
         ))
 
         return eval_results, images
+
+
+def log_validation(
+    pipeline,
+    accelerator,
+    epoch,
+    num_validation_images,
+    validation_prompt,
+    seed,
+    is_final_validation=False,
+) -> Dict[str, Image.Image]:
+    '''
+    Adapted from The HuggingFace Inc. team. All rights reserved.
+    Licensed under the Apache License, Version 2.0.
+    Source: https://github.com/huggingface/diffusers/blob/main/examples/text_to_image/train_text_to_image_lora.py
+    '''
+    images: Dict[str, Image.Image] = {}
+    logger.info(
+        f"Running validation... \n Generating {num_validation_images} images with prompt:"
+        f" {validation_prompt}."
+    )
+    pipeline = pipeline.to(accelerator.device)
+    pipeline.set_progress_bar_config(disable=True)
+    generator = torch.Generator(device=accelerator.device)
+    if seed is not None:
+        generator = generator.manual_seed(seed)
+    if torch.backends.mps.is_available():
+        autocast_ctx = nullcontext()
+    else:
+        autocast_ctx = torch.autocast(accelerator.device.type)
+
+    with autocast_ctx:
+        for i in range(num_validation_images):
+            images[f"val_prompt_{i+1:02d}"] = pipeline(validation_prompt, num_inference_steps=30, generator=generator).images[0]
+
+    for tracker in accelerator.trackers:
+        phase_name = "test" if is_final_validation else "validation"
+        if tracker.name == "tensorboard":
+            tensorboard_log_image(tracker, phase_name, validation_prompt, epoch, images)
+        if tracker.name == "wandb":
+            wandb_log_image(tracker, phase_name, validation_prompt, epoch, images)
+
+    return images
+
+
+def plot_gradient_conflict_hist(similarities: List[float], title: str, color: str) -> Image.Image:
+    fig = plt.figure(figsize=(8, 5))
+    plt.hist(similarities, bins=50, color=color, alpha=0.75, label="Values")
+    plt.axvline(np.mean(similarities), color=color, linestyle='-.', linewidth=2, label="Avgerage")
+    plt.xlabel("Cosine Similarity")
+    plt.ylabel("Frequency")
+    plt.title(title)
+    #plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    fig.canvas.draw()
+    return Image.fromarray(np.uint8(np.array(fig.canvas.buffer_rgba())))
