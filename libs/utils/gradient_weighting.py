@@ -2,8 +2,10 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel
 from typing import List
 import torch
+from libs.utils.logger import get_logger
 
-logger = ('gradient_weighting')
+
+logger = get_logger('gradient_weighting')
 
 
 class GradientWeightingMethod(BaseModel, ABC):
@@ -20,7 +22,7 @@ class GradientWeightingMethod(BaseModel, ABC):
     '''
 
     @abstractmethod
-    def weight_grads(grads_forget: List[torch.Tensor], grads_retain: List[torch.Tensor], accelerator) -> List[torch.Tensor]:
+    def weight_grads(self, grads_forget: List[torch.Tensor], grads_retain: List[torch.Tensor], accelerator) -> List[torch.Tensor]:
         '''
         @return scaled_grad
         '''
@@ -33,7 +35,7 @@ class GradientWeightingMethodNone(GradientWeightingMethod):
 
     For debugging/comparison purposes
     '''
-    def weight_grads(grads_forget: List[torch.Tensor], grads_retain: List[torch.Tensor], accelerator) -> torch.Tensor:
+    def weight_grads(self, grads_forget: List[torch.Tensor], grads_retain: List[torch.Tensor], accelerator) -> torch.Tensor:
         return torch.cat([g.view(-1) for g in grads_forget])
 
     
@@ -50,7 +52,7 @@ class GradientWeightingMethodMunba(GradientWeightingMethod):
     }
     The closed-form solution is implemented as described in the V1 of the paper.
     '''
-    def weight_grads(grads_forget: List[torch.Tensor], grads_retain: List[torch.Tensor], accelerator) -> torch.Tensor:
+    def weight_grads(self, grads_forget: List[torch.Tensor], grads_retain: List[torch.Tensor], accelerator) -> torch.Tensor:
         # Stack gradients to form matrix G
         G = torch.stack([
             torch.cat([g.view(-1) for g in grads_retain]),
@@ -64,7 +66,7 @@ class GradientWeightingMethodMunba(GradientWeightingMethod):
         alpha_retain = torch.sqrt((2 * k11 * k22 + k12 * torch.sqrt(k11 * k22)) / (k11**2 * k22 - k11 * k12**2))    # This is a Tensor of shape [], aka is a float
         alpha_forget = (1 - k11 * alpha_retain**2) / (k12 * alpha_retain)    
         alpha = torch.tensor([alpha_retain, alpha_forget]).reshape(2, 1)  # Typical values seem to be things like [0.0016, -0.0029]
-        logger.debug("Alpha in this iteration:", alpha)
+        logger.debug(f"Alpha in this iteration: {alpha}")
 
         G = G.to(accelerator.device)
         alpha = alpha.to(accelerator.device)
