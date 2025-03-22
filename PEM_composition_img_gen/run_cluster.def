@@ -5,6 +5,7 @@ From: ubuntu:22.04
     # Available at runtime
     export DEBIAN_FRONTEND=noninteractive
     export PYTHONPATH=$PYTHONPATH:.
+    export PYTHONPATH=$PYTHONPATH:..
     export PYTHONPATH=$PYTHONPATH/src
     export PYTHONPATH=$PYTHONPATH:/libs/
     export PYTHONPATH=$PYTHONPATH:/

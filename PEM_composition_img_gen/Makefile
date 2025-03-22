@@ -97,6 +97,7 @@ stop-docker:
 # Docs: https://ppke.sharepoint.com/sites/itk-it/SitePages/HPC.aspx
 # All executions are done with apptainer, so you can debug it locally if needed, for example:
 # apptainer exec run_cluster.sif python ./fusanalysis/users/Leonardo/3.1_train_cluster.py
+# Apptainer has a volume-like mount, so filesystem modifications inside the running "container" are sync with the master node filesystem
 
 setup-cluster:
 	# TODO: automate the initial clone of the repo and copy of the .env file
@@ -104,7 +105,7 @@ setup-cluster:
 	echo 'NOT IMPLEMENTED...'
 	exit 1
 
-# TODO: configure volume-like mounts for the interactive jobs!!!!!!!!!!!!!!!!
+
 run-interactive-cluster:
 	if $(call is_docker_running,unlearning-notebooks); then \
 		echo 'Local docker container can not be running at the same time (there will be port conflict). Exiting...';
@@ -114,10 +115,11 @@ run-interactive-cluster:
 	$(call exec_cluster, "$(build_cluster)")
 
 	# TODO: for some reason, the following commands don't work inside the ssh function
+	# Use `--gres` to select machine config (gpu:v100:1 = 1 V100 16GB GPU, gpu:a100:1 = 1 A100 40GB GPU)
 	sshpass -p '${SSH_PASSWORD_SHIBBOLETH}' ssh -o ProxyCommand="sshpass -p '${SSH_PASSWORD_CLUSTER}' ssh -W %h:%p ${SSH_USER_SHIBBOLETH}@users.itk.ppke.hu" ${SSH_USER_CLUSTER}@cl.itk.ppke.hu " \
-		cd tutorial-ppke-cluster; \
+		cd '${GIT_REPOSITORY_NAME}'; \
 		nohup \
-		srun -pgpu --gres=gpu:v100:1 apptainer run --nv run_cluster.sif /usr/bin/tini -s -- jupyter notebook --port=8888 --no-browser --ip=0.0.0.0 --allow-root --NotebookApp.token=cfbc4b9c-7056-4a8c-8c34-3e521dd01cdb \
+		srun -pgpu --gres=gpu:a100:1 apptainer run --nv PEM_composition_img_gen/run_cluster.sif /usr/bin/tini -s -- jupyter notebook --port=8888 --no-browser --ip=0.0.0.0 --allow-root --NotebookApp.token=cfbc4b9c-7056-4a8c-8c34-3e521dd01cdb \
 		> output.log 2>&1 & \
 	"
 	echo 'Job launched'
