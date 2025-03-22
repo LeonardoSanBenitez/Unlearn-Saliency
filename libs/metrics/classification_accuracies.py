@@ -11,7 +11,7 @@ from libs.datasets import UnlearnDatasetSplit
 class ClassificationAccuracy(Metric):
     metrics: List[Literal['Unlearn', 'Remaining', 'Testing']]
 
-    def __init__(self, model: models, loaders: Dict[str, Dataloader], metrics: List[Literal['Unlearn', 'Remaining', 'Testing']]):
+    def __init__(self, model: models, loaders: Dict[str, DataLoader], metrics: List[Literal['Unlearn', 'Remaining', 'Testing']]):
         # TODO: use pydantic's constructor, and initialize the models as post init
         self.metrics = metrics
         self.model = model
