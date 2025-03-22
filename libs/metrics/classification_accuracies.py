@@ -1,4 +1,4 @@
-from typing import List, Literal, Dict
+from typing import List, Literal, Dict, Optional
 from torchvision import transforms
 from libs.metrics.base import Metric
 import numpy as np
@@ -10,12 +10,14 @@ from libs.datasets import UnlearnDatasetSplit
 
 class ClassificationAccuracy(Metric):
     metrics: List[Literal['Unlearn', 'Remaining', 'Testing']]
+    model: models
+    loaders: Dict[str, DataLoader]
 
-    def __init__(self, model: models, loaders: Dict[str, DataLoader], metrics: List[Literal['Unlearn', 'Remaining', 'Testing']]):
-        # TODO: use pydantic's constructor, and initialize the models as post init
-        self.metrics = metrics
-        self.model = model
-        self.loaders = loaders
+    def model_post_init(self, __context: dict) -> None:
+        # Download the models, if required
+        assert set([UnlearnDatasetSplit.Train_forget, UnlearnDatasetSplit.Train_retain, UnlearnDatasetSplit.Test_retain]) == set([key.value for key in list(self.loaders.keys())]), "Loaders should be filled"
+        assert isinstance(model, models), "Model not valid"
+        pass
 
     def _accuracy(output: torch.Tensor, target: torch.Tensor, topk: tuple = (1,)) -> list:
         """
@@ -92,12 +94,12 @@ class ClassificationAccuracy(Metric):
         for metric in self.metrics:
             if metric == 'Unlearn':
                 # TODO: change to test_forget, right now using train to be equal to SalUn
-                scores[metric] = self._compute_acc(metric, self.loaders[UnlearnDatasetSplit.Train_forget], True)
+                self.scores[metric] = self._compute_acc(metric, self.loaders[UnlearnDatasetSplit.Train_forget], True)
             if metric == 'Remaining':
-                scores[metric] = self._compute_acc(metric, self.loaders[UnlearnDatasetSplit.Train_retain])
+                self.scores[metric] = self._compute_acc(metric, self.loaders[UnlearnDatasetSplit.Train_retain])
             else:
-                scores[metric] = self._compute_acc(metric, self.loaders[UnlearnDatasetSplit.Test_retain])
+                self.scores[metric] = self._compute_acc(metric, self.loaders[UnlearnDatasetSplit.Test_retain])
         
-        assert len(scores) == len(self.metrics)
-
+        assert len(self.scores) == len(self.metrics)
+        
         return scores
