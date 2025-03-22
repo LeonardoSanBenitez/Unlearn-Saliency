@@ -13,9 +13,10 @@ class ClassificationAccuracy(Metric):
     model: models
     loaders: Dict[str, DataLoader]
 
-    def model_post_init(self, __context: dict) -> None:
+    def model_post_init(self, __context: dict = None) -> None:
         # Download the models, if required
-        assert set([UnlearnDatasetSplit.Train_forget, UnlearnDatasetSplit.Train_retain, UnlearnDatasetSplit.Test_retain]) == set([key.value for key in list(self.loaders.keys())]), "Loaders should be filled"
+        expected_keys = [UnlearnDatasetSplit.Train_forget, UnlearnDatasetSplit.Train_retain, UnlearnDatasetSplit.Test_retain]
+        assert set(expected_keys) == set([key.value for key in list(self.loaders.keys())]), "Loaders should be filled"
         assert isinstance(model, models), "Model not valid"
         pass
 
