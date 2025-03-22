@@ -10,14 +10,14 @@ from libs.datasets import UnlearnDatasetSplit
 
 class ClassificationAccuracy(Metric):
     metrics: List[Literal['Unlearn', 'Remaining', 'Testing']]
-    model: models
+    unlearned_model: models
     loaders: Dict[str, DataLoader]
 
     def model_post_init(self, __context: dict = None) -> None:
         # Download the models, if required
         expected_keys = [UnlearnDatasetSplit.Train_forget, UnlearnDatasetSplit.Train_retain, UnlearnDatasetSplit.Test_retain]
         assert set(expected_keys) == set([key.value for key in list(self.loaders.keys())]), "Loaders should be filled"
-        assert isinstance(model, models), "Model not valid"
+        assert isinstance(self.unlearned_model, models), "Model not valid"
         pass
 
     def _accuracy(output: torch.Tensor, target: torch.Tensor, topk: tuple = (1,)) -> list:
@@ -59,7 +59,7 @@ class ClassificationAccuracy(Metric):
         criterion = torch.nn.CrossEntropyLoss()
 
         # switch to evaluate mode
-        self.model.eval()
+        self.unlearned_model.eval()
         device = (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
 
         for i, (image, target) in enumerate(loader):
@@ -68,7 +68,7 @@ class ClassificationAccuracy(Metric):
             target = target.cuda()
 
             with torch.no_grad():
-                output = self.model(image)
+                output = self.unlearned_model(image)
                 loss = criterion(output, target)
 
             output = output.float()
