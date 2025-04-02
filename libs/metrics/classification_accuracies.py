@@ -61,14 +61,23 @@ class ClassificationAccuracy(Metric):
 
         for metric in self.metrics:
             if metric == 'Unlearn':
-                # TODO: change to test_forget, right now using train to be equal to SalUn
-                scores[metric] = self._compute_acc(self.outputs[UnlearnDatasetSplit.Train_forget.value], self.targets[UnlearnDatasetSplit.Train_forget.value], True)
+                scores[metric] = self._compute_acc(
+                    self.outputs[UnlearnDatasetSplit.Train_forget.value],
+                    self.targets[UnlearnDatasetSplit.Train_forget.value],
+                    True)
             elif metric == 'Unlearn_test':
-                scores[metric] = self._compute_acc(self.outputs[UnlearnDatasetSplit.Test_forget.value], self.targets[UnlearnDatasetSplit.Test_forget.value], True)
+                scores[metric] = self._compute_acc(
+                    self.outputs[UnlearnDatasetSplit.Test_forget.value],
+                    self.targets[UnlearnDatasetSplit.Test_forget.value],
+                    True)
             elif metric == 'Remaining':
-                scores[metric] = self._compute_acc(self.outputs[UnlearnDatasetSplit.Train_retain.value], self.targets[UnlearnDatasetSplit.Train_retain.value])
+                scores[metric] = self._compute_acc(
+                    self.outputs[UnlearnDatasetSplit.Train_retain.value],
+                    self.targets[UnlearnDatasetSplit.Train_retain.value])
             else:
-                scores[metric] = self._compute_acc(self.outputs[UnlearnDatasetSplit.Test_retain.value], self.targets[UnlearnDatasetSplit.Test_retain.value])
+                scores[metric] = self._compute_acc(
+                    self.outputs[UnlearnDatasetSplit.Test_retain.value],
+                    self.targets[UnlearnDatasetSplit.Test_retain.value])
         
         assert len(scores) == len(self.metrics)
         
