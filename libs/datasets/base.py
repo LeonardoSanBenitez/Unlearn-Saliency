@@ -2,7 +2,7 @@ import os
 import pickle
 import json
 from enum import Enum
-from typing import Dict, List, Optional, Union, Literal
+from typing import Dict, List, Optional, Union, Literal, Sequence
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, ConfigDict
 import numpy as np
@@ -49,6 +49,9 @@ class UnlearnDataset(BaseModel, ABC):
     _dataset_splits: Dict[UnlearnDatasetSplit, Union[Subset, VisionDataset]] = {}
     _classes: Optional[List[str]] = None
     _n_classes: int = 0
+
+    mean: Optional[Sequence[float]] = None
+    std: Optional[Sequence[float]] = None
 
     def model_post_init(self, __context: dict) -> None:
         # TODO: using pydantic's model_post_init makes this hard to debug... maybe just overwritting the constructor is better
@@ -162,6 +165,9 @@ class UnlearnDataset(BaseModel, ABC):
         Raised exceptions: none
         '''
         return self._dataset_splits
+    
+    def denormalize(self, normalized: torch.Tensor) -> torch.Tensor:
+        return normalized * torch.Tensor(self.std).view(-1,1,1) + torch.Tensor(self.mean).view(-1,1,1)
 
     def save(self, path: str, format: Literal['pkl', 'jpg'] = 'pkl', save_unsplit: bool = False) -> None:
         '''
@@ -186,6 +192,8 @@ class UnlearnDataset(BaseModel, ABC):
                         image_path = os.path.join(split_path, f"{idx}.jpg")
                         # Convert tensor to PIL image and save
                         if isinstance(image, torch.Tensor):
+                            if self.mean is not None or self.std is not None:
+                                image = self.denormalize(image)
                             image = transforms.ToPILImage()(image)
                         image.save(image_path)
                         metadata.append({
