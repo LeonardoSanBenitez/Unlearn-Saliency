@@ -15,26 +15,26 @@ class FrechetInceptionDistance(Metric):
     gen_imgs: torch.Tensor = None
 
     def model_post_init(self, __context: dict = None) -> None:
-        assert real_imgs_path is not None or real_imgs is not None,\
+        assert self.real_imgs_path is not None or self.real_imgs is not None,\
             "Could not find real images data!\r\nPlease define a path to a folder or a torch.Tensor with the images."
-        assert gen_imgs_path is not None or gen_imgs is not None,\
+        assert self.gen_imgs_path is not None or self.gen_imgs is not None,\
             "Could not find generated images data!\r\nPlease define a path to a folder or a torch.Tensor with the images."
 
         if self.real_imgs_path:
-            assert verify_images_in_path(self.real_imgs_path), \
+            assert self.verify_images_in_path(self.real_imgs_path), \
                 f"No valid images found in the folder '{self.real_imgs_path}'."
         else:
             assert self.real_imgs.dim() == 4, \
                 "The real images tensor should have 4 dimensions (batch_size, channels, height, width)."
         if self.gen_imgs_path:
-            assert verify_images_in_path(self.gen_imgs_path), \
+            assert self.verify_images_in_path(self.gen_imgs_path), \
                 f"No valid images found in the folder '{self.gen_imgs_path}'."
         else:
             assert self.gen_imgs.dim() == 4, \
                 "The generated images tensor should have 4 dimensions (batch_size, channels, height, width)."
         pass
 
-    def verify_images_in_path(path: str) -> bool:
+    def verify_images_in_path(self, path: str) -> bool:
         """
         Verifies if the given path contains image files.
         :param path: Path to the folder to check.
@@ -51,7 +51,7 @@ class FrechetInceptionDistance(Metric):
                 return True
         return False
     
-    def load_images_from_folder(folder_path: str, transform: transforms.Compose) -> torch.Tensor:
+    def load_images_from_folder(self, folder_path: str, transform: transforms.Compose) -> torch.Tensor:
         """
         Loads all images from a folder, applies transformations, and returns them as a torch.Tensor.
         :param folder_path: Path to the folder containing images.
@@ -87,12 +87,12 @@ class FrechetInceptionDistance(Metric):
         ])
 
         if self.real_imgs_path:
-            real_images = load_images_from_folder(self.real_imgs_path, transform)
+            real_images = self.load_images_from_folder(self.real_imgs_path, transform)
         else:
             real_images = self.real_imgs
 
         if self.gen_imgs_path:
-            gen_images = load_images_from_folder(self.gen_imgs_path, transform)
+            gen_images = self.load_images_from_folder(self.gen_imgs_path, transform)
         else:
             gen_images = self.gen_imgs
 
@@ -107,3 +107,4 @@ class FrechetInceptionDistance(Metric):
         scores['FID'] = float(fid_val['frechet_inception_distance'])
 
         return scores
+        
